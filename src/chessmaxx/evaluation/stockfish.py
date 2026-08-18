@@ -40,9 +40,19 @@ class AnalysisCache:
             self._values = json.loads(self.path.read_text(encoding="utf-8"))
 
     @staticmethod
-    def key(fen: str, engine_id: dict[str, str], config: StockfishConfig) -> str:
+    def key(
+        fen: str,
+        engine_id: dict[str, str],
+        config: StockfishConfig,
+        root_move: str | None = None,
+    ) -> str:
         payload = json.dumps(
-            {"fen": fen, "engine": engine_id, "config": asdict(config)},
+            {
+                "fen": fen,
+                "engine": engine_id,
+                "config": asdict(config),
+                "root_move": root_move,
+            },
             sort_keys=True,
             separators=(",", ":"),
         )
@@ -124,6 +134,31 @@ class StockfishAnalyzer:
         self.cache.put(cache_key, moves)
         return moves
 
+    def score_move(self, fen: str, move_uci: str) -> int:
+        """Evaluate one legal root move with the same node budget as MultiPV."""
+
+        board = chess.Board(fen)
+        move = chess.Move.from_uci(move_uci)
+        if move not in board.legal_moves:
+            raise ValueError(f"{move_uci!r} is not legal in the supplied position")
+        cache_key = self.cache.key(fen, self.engine_id, self.config, move_uci)
+        cached = self.cache.get(cache_key)
+        if cached is not None:
+            return cached[0].score_cp
+
+        info = self.engine.analyse(
+            board,
+            chess.engine.Limit(nodes=self.config.nodes),
+            root_moves=[move],
+            info=chess.engine.INFO_SCORE | chess.engine.INFO_PV,
+        )
+        infos = info if isinstance(info, list) else [info]
+        scored = self._teacher_moves(board, infos)
+        if not scored:
+            raise RuntimeError(f"Stockfish returned no score for {move_uci}")
+        self.cache.put(cache_key, scored)
+        return scored[0].score_cp
+
     def _teacher_moves(
         self, board: chess.Board, infos: list[dict[str, Any]]
     ) -> tuple[TeacherMove, ...]:
@@ -140,4 +175,3 @@ class StockfishAnalyzer:
             seen.add(pv[0])
             moves.append(TeacherMove(move=pv[0].uci(), score_cp=centipawns))
         return tuple(moves)
-

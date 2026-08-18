@@ -15,8 +15,14 @@ class FakeEngine:
         self.calls = 0
         self.closed = False
 
-    def analyse(self, board, limit, *, multipv, info):
+    def analyse(self, board, limit, **kwargs):
         self.calls += 1
+        if kwargs.get("root_moves"):
+            move = kwargs["root_moves"][0]
+            return {
+                "pv": [move],
+                "score": chess.engine.PovScore(chess.engine.Cp(12), board.turn),
+            }
         return [
             {
                 "pv": [chess.Move.from_uci("e2e4")],
@@ -74,3 +80,15 @@ def test_context_manager_closes_engine():
 
     assert engine.closed is True
 
+
+def test_scores_and_caches_a_specific_legal_move(tmp_path):
+    engine = FakeEngine()
+    analyzer = StockfishAnalyzer(
+        engine,  # type: ignore[arg-type]
+        StockfishConfig(nodes=100),
+        AnalysisCache(tmp_path / "cache.json"),
+    )
+
+    assert analyzer.score_move(chess.STARTING_FEN, "g1f3") == 12
+    assert analyzer.score_move(chess.STARTING_FEN, "g1f3") == 12
+    assert engine.calls == 1
