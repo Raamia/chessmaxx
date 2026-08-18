@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chessmaxx"
+version = "0.1.0"
+description = "Evaluation and training infrastructure for a chess-playing language model"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+  "python-chess>=1.999,<2",
+]
+
+[project.optional-dependencies]
+model = [
+  "torch>=2.3",
+  "transformers>=4.51",
+]
+dev = [
+  "pytest>=8.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+
