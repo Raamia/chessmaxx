@@ -1,4 +1,6 @@
-![Chessmaxx](assets/raamichess.png)
+<p align="center">
+  <img src="assets/raamichess.png" alt="Chessmaxx" width="350">
+</p>
 
 I like chess and I like LLM.
 
