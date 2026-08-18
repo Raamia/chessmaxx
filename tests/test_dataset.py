@@ -43,3 +43,41 @@ def test_loader_reports_invalid_fen_with_line_number(tmp_path):
     with pytest.raises(DatasetError, match=r"positions.jsonl:1"):
         load_positions(path)
 
+
+@pytest.mark.parametrize(
+    ("row", "message"),
+    [
+        (
+            {"position_id": "terminal", "fen": "7k/7Q/7K/8/8/8/8/8 b - - 0 1"},
+            "already terminal",
+        ),
+        (
+            {
+                "position_id": "illegal-teacher",
+                "fen": chess.STARTING_FEN,
+                "teacher_moves": [{"move": "e2e5", "score_cp": 10}],
+            },
+            "teacher move 'e2e5' is illegal",
+        ),
+        (
+            {
+                "position_id": "unordered",
+                "fen": chess.STARTING_FEN,
+                "teacher_moves": [
+                    {"move": "e2e4", "score_cp": 10},
+                    {"move": "d2d4", "score_cp": 20},
+                ],
+            },
+            "descending score",
+        ),
+    ],
+)
+def test_loader_rejects_positions_that_break_evaluation_contract(
+    tmp_path, row, message
+):
+    path = tmp_path / "positions.jsonl"
+    path.write_text(json.dumps(row) + "\n", encoding="utf-8")
+
+    with pytest.raises(DatasetError, match=message):
+        load_positions(path)
+

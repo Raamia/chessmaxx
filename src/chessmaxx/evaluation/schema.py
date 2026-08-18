@@ -38,10 +38,32 @@ class EvaluationPosition:
     def __post_init__(self) -> None:
         if not self.position_id.strip():
             raise ValueError("position_id must not be empty")
-        if not chess.Board(self.fen).is_valid():
+        board = chess.Board(self.fen)
+        if not board.is_valid():
             raise ValueError(f"position {self.position_id!r} has an invalid board")
+        if board.is_game_over():
+            raise ValueError(f"position {self.position_id!r} is already terminal")
         if self.ply is not None and self.ply < 0:
             raise ValueError("ply must be non-negative")
+        seen_moves: set[chess.Move] = set()
+        previous_score: int | None = None
+        for teacher_move in self.teacher_moves:
+            try:
+                move = chess.Move.from_uci(teacher_move.move)
+            except ValueError as exc:
+                raise ValueError(
+                    f"teacher move {teacher_move.move!r} is not valid UCI"
+                ) from exc
+            if move not in board.legal_moves:
+                raise ValueError(
+                    f"teacher move {teacher_move.move!r} is illegal in this position"
+                )
+            if move in seen_moves:
+                raise ValueError(f"duplicate teacher move {teacher_move.move!r}")
+            if previous_score is not None and teacher_move.score_cp > previous_score:
+                raise ValueError("teacher moves must be ordered by descending score")
+            seen_moves.add(move)
+            previous_score = teacher_move.score_cp
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "EvaluationPosition":
@@ -70,4 +92,3 @@ class EvaluationPosition:
         if self.metadata:
             value["metadata"] = self.metadata
         return value
-
