@@ -1,4 +1,4 @@
-# Chessmaxx
+![Chessmaxx](assets/raamichess.png)
 
 I like chess and I like LLM.
 
