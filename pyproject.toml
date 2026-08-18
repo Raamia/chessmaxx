@@ -13,6 +13,9 @@ dependencies = [
   "python-chess>=1.999,<2",
 ]
 
+[project.scripts]
+chessmaxx-eval = "chessmaxx.evaluation.cli:main"
+
 [project.optional-dependencies]
 model = [
   "torch>=2.3",
@@ -28,4 +31,3 @@ where = ["src"]
 [tool.pytest.ini_options]
 addopts = "-q"
 testpaths = ["tests"]
-

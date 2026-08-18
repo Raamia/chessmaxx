@@ -57,12 +57,14 @@ class EvaluationRunner:
         generator: MoveGenerator,
         analyzer: PositionAnalyzer,
         batch_size: int = 8,
+        settings: dict[str, Any] | None = None,
     ) -> None:
         if batch_size <= 0:
             raise ValueError("batch_size must be positive")
         self.generator = generator
         self.analyzer = analyzer
         self.batch_size = batch_size
+        self.settings = settings or {}
 
     def run(self, positions: Sequence[EvaluationPosition]) -> EvaluationReport:
         results: list[PositionResult] = []
@@ -113,8 +115,7 @@ class EvaluationRunner:
             created_at=datetime.now(UTC).isoformat(),
             model=dict(self.generator.metadata),
             engine=dict(self.analyzer.engine_id),
-            settings={"batch_size": self.batch_size},
+            settings={**self.settings, "batch_size": self.batch_size},
             summary=summarize(results),
             results=tuple(results),
         )
-
