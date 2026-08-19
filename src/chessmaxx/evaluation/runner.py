@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
@@ -10,6 +11,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from chessmaxx.evaluation.metrics import PositionResult, summarize
+from chessmaxx.evaluation.journal import ResultJournal
 from chessmaxx.evaluation.model import MoveGenerator
 from chessmaxx.evaluation.moves import check_generated_move
 from chessmaxx.evaluation.schema import EvaluationPosition, TeacherMove
@@ -60,6 +62,7 @@ class EvaluationRunner:
         analyzer: PositionAnalyzer,
         batch_size: int = 8,
         settings: dict[str, Any] | None = None,
+        journal_path: str | Path | None = None,
     ) -> None:
         if batch_size <= 0:
             raise ValueError("batch_size must be positive")
@@ -67,14 +70,49 @@ class EvaluationRunner:
         self.analyzer = analyzer
         self.batch_size = batch_size
         self.settings = settings or {}
+        self.journal_path = Path(journal_path) if journal_path is not None else None
+
+    def _run_key(
+        self,
+        positions: Sequence[EvaluationPosition],
+        model_metadata: dict[str, Any],
+    ) -> str:
+        payload = {
+            "positions": [
+                {"position_id": position.position_id, "fen": position.fen}
+                for position in positions
+            ],
+            "model": model_metadata,
+            "engine": self.analyzer.engine_id,
+            "settings": {**self.settings, "batch_size": self.batch_size},
+        }
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(encoded.encode()).hexdigest()
 
     def run(self, positions: Sequence[EvaluationPosition]) -> EvaluationReport:
+        model_metadata = dict(self.generator.metadata)
+        journal = None
+        restored: dict[str, PositionResult] = {}
+        if self.journal_path is not None:
+            journal = ResultJournal(
+                self.journal_path, self._run_key(positions, model_metadata)
+            )
+            restored = journal.load_or_create()
+            expected = {position.position_id: position.fen for position in positions}
+            for position_id, result in restored.items():
+                if expected.get(position_id) != result.fen:
+                    raise ValueError(
+                        f"journal result {position_id!r} does not match the dataset"
+                    )
         reset_telemetry = getattr(self.generator, "reset_telemetry", None)
         if reset_telemetry is not None:
             reset_telemetry()
-        results: list[PositionResult] = []
-        for start in range(0, len(positions), self.batch_size):
-            batch = positions[start : start + self.batch_size]
+        results_by_id = dict(restored)
+        pending = [
+            position for position in positions if position.position_id not in restored
+        ]
+        for start in range(0, len(pending), self.batch_size):
+            batch = pending[start : start + self.batch_size]
             generated = self.generator.generate_many(
                 [position.fen for position in batch]
             )
@@ -97,31 +135,36 @@ class EvaluationRunner:
                         else self.analyzer.score_move(position.fen, checked.parsed_move)
                     )
                     regret = max(0, best_score - model_score)
-                results.append(
-                    PositionResult(
-                        position_id=position.position_id,
-                        fen=position.fen,
-                        raw_output=response.raw_output,
-                        candidate=checked.candidate,
-                        parsed_move=checked.parsed_move,
-                        is_legal=checked.is_legal,
-                        error=checked.error,
-                        teacher_moves=tuple(item.move for item in teacher),
-                        best_score_cp=best_score,
-                        model_score_cp=model_score,
-                        centipawn_regret=regret,
-                        latency_ms=response.latency_ms,
-                        prompt_tokens=response.prompt_tokens,
-                        output_tokens=response.output_tokens,
-                    )
+                result = PositionResult(
+                    position_id=position.position_id,
+                    fen=position.fen,
+                    raw_output=response.raw_output,
+                    candidate=checked.candidate,
+                    parsed_move=checked.parsed_move,
+                    is_legal=checked.is_legal,
+                    error=checked.error,
+                    teacher_moves=tuple(item.move for item in teacher),
+                    best_score_cp=best_score,
+                    model_score_cp=model_score,
+                    centipawn_regret=regret,
+                    latency_ms=response.latency_ms,
+                    prompt_tokens=response.prompt_tokens,
+                    output_tokens=response.output_tokens,
                 )
+                results_by_id[position.position_id] = result
+                if journal is not None:
+                    journal.append(result)
+
+        results = tuple(results_by_id[position.position_id] for position in positions)
+        telemetry = dict(getattr(self.generator, "telemetry", {}))
+        telemetry["positions_restored"] = len(restored)
 
         return EvaluationReport(
             created_at=datetime.now(UTC).isoformat(),
-            model=dict(self.generator.metadata),
+            model=model_metadata,
             engine=dict(self.analyzer.engine_id),
             settings={**self.settings, "batch_size": self.batch_size},
-            telemetry=dict(getattr(self.generator, "telemetry", {})),
+            telemetry=telemetry,
             summary=summarize(results),
-            results=tuple(results),
+            results=results,
         )

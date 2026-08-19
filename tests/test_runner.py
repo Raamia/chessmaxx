@@ -65,3 +65,26 @@ def test_runner_preserves_raw_results_and_aggregates_metrics(tmp_path):
     assert saved["results"][1]["error"] == "illegal_move"
     assert saved["telemetry"]["positions_per_second"] == 12.5
     assert generator.reset_count == 1
+
+
+def test_runner_restores_completed_positions_without_generating_again(tmp_path):
+    positions = [
+        EvaluationPosition(f"p-{index}", chess.STARTING_FEN)
+        for index in range(3)
+    ]
+    journal = tmp_path / "progress.jsonl"
+    first_generator = FakeGenerator()
+    first = EvaluationRunner(
+        first_generator, FakeAnalyzer(), batch_size=3, journal_path=journal
+    ).run(positions)
+
+    class ResumeGenerator(FakeGenerator):
+        def generate_many(self, fens):
+            raise AssertionError("completed positions should not be generated again")
+
+    resumed = EvaluationRunner(
+        ResumeGenerator(), FakeAnalyzer(), batch_size=3, journal_path=journal
+    ).run(positions)
+
+    assert resumed.results == first.results
+    assert resumed.telemetry["positions_restored"] == 3

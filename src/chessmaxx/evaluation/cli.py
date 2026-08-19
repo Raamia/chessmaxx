@@ -66,6 +66,7 @@ def build_parser() -> argparse.ArgumentParser:
     positions.add_argument("--output", type=Path, required=True)
     positions.add_argument("--stockfish", default="stockfish")
     positions.add_argument("--cache", type=Path, default=Path("artifacts/cache.json"))
+    positions.add_argument("--journal", type=Path)
     positions.add_argument("--device")
     positions.add_argument("--batch-size", type=_positive_int, default=8)
     positions.add_argument("--max-new-tokens", type=_positive_int, default=8)
@@ -85,6 +86,11 @@ def build_parser() -> argparse.ArgumentParser:
     baseline.add_argument("--output", type=Path, required=True)
     baseline.add_argument("--stockfish", default="stockfish")
     baseline.add_argument("--cache", type=Path, default=Path("artifacts/cache.json"))
+    baseline.add_argument(
+        "--journal",
+        type=Path,
+        help="progress journal path (defaults beside the final report)",
+    )
     baseline.add_argument("--device", help="override the device in the profile")
     baseline.add_argument(
         "--limit", type=_positive_int, help="evaluate only the first N positions"
@@ -132,11 +138,15 @@ def run_positions(args: argparse.Namespace) -> int:
     with StockfishAnalyzer.open(
         args.stockfish, config=engine_config, cache_path=args.cache
     ) as analyzer:
+        journal_path = args.journal or args.output.with_suffix(
+            args.output.suffix + ".progress.jsonl"
+        )
         report = EvaluationRunner(
             model,
             analyzer,
             batch_size=args.batch_size,
             settings=settings,
+            journal_path=journal_path,
         ).run(positions)
     report.write(args.output)
     print(json.dumps(report.summary, indent=2, sort_keys=True))
@@ -179,11 +189,15 @@ def run_baseline(args: argparse.Namespace) -> int:
     with StockfishAnalyzer.open(
         args.stockfish, config=engine_config, cache_path=args.cache
     ) as analyzer:
+        journal_path = args.journal or args.output.with_suffix(
+            args.output.suffix + ".progress.jsonl"
+        )
         report = EvaluationRunner(
             model,
             analyzer,
             batch_size=profile.batch_size,
             settings=settings,
+            journal_path=journal_path,
         ).run(positions)
     report.write(args.output)
     print(json.dumps(report.summary, indent=2, sort_keys=True))
