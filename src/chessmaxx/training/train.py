@@ -34,15 +34,35 @@ class TrainingDataSummary:
     supervised_tokens_per_epoch: int
 
 
+@dataclass(frozen=True, slots=True)
+class ValidationDataSummary:
+    available_validation_examples: int
+    selected_examples: int
+    optimizer_records: int
+    input_tokens_per_evaluation: int
+    supervised_tokens_per_evaluation: int
+
+
+def select_split_examples(
+    examples: list[TrainingExample], *, split: str, maximum: int
+) -> list[TrainingExample]:
+    if split not in {"train", "validation", "test"}:
+        raise ValueError("split must be train, validation, or test")
+    if maximum <= 0:
+        raise ValueError("maximum must be positive")
+    available = [example for example in examples if example.split == split]
+    if len(available) < maximum:
+        raise ValueError(
+            f"dataset contains {len(available)} {split} examples; "
+            f"the profile requires {maximum}"
+        )
+    return available[:maximum]
+
+
 def select_training_examples(
     examples: list[TrainingExample], *, maximum: int
 ) -> list[TrainingExample]:
-    if maximum <= 0:
-        raise ValueError("maximum must be positive")
-    selected = [example for example in examples if example.split == "train"][:maximum]
-    if not selected:
-        raise ValueError("dataset contains no training examples")
-    return selected
+    return select_split_examples(examples, split="train", maximum=maximum)
 
 
 def prepare_training_dataset(
@@ -117,6 +137,32 @@ def _warmup_arguments(
     )
 
 
+def extract_learning_curve(
+    log_history: list[dict[str, Any]],
+) -> list[dict[str, int | float]]:
+    """Merge Trainer loss, validation, and optimizer logs by global step."""
+
+    points: dict[int, dict[str, int | float]] = {}
+    retained = {
+        "epoch",
+        "loss",
+        "eval_loss",
+        "learning_rate",
+        "grad_norm",
+        "eval_runtime",
+    }
+    for entry in log_history:
+        step = entry.get("step")
+        if not isinstance(step, int):
+            continue
+        point = points.setdefault(step, {"step": step})
+        for key in retained:
+            value = entry.get(key)
+            if isinstance(value, (int, float)):
+                point[key] = value
+    return [points[step] for step in sorted(points)]
+
+
 def run_tiny_sft(
     profile: TinySFTProfile,
     *,
@@ -147,6 +193,15 @@ def run_tiny_sft(
     all_examples = load_training_examples(dataset_source)
     available_train = sum(example.split == "train" for example in all_examples)
     examples = select_training_examples(all_examples, maximum=profile.max_examples)
+    validation_examples = (
+        select_split_examples(
+            all_examples,
+            split="validation",
+            maximum=profile.max_validation_examples,
+        )
+        if profile.max_validation_examples
+        else []
+    )
 
     tokenizer = transformers.AutoTokenizer.from_pretrained(
         profile.model_id,
@@ -200,6 +255,29 @@ def run_tiny_sft(
         input_tokens_per_epoch=data_summary.input_tokens_per_epoch,
         supervised_tokens_per_epoch=data_summary.supervised_tokens_per_epoch,
     )
+    validation_dataset = None
+    validation_summary = None
+    if validation_examples:
+        validation_dataset, raw_validation_summary = prepare_training_dataset(
+            validation_examples,
+            tokenizer,
+            max_length=profile.max_length,
+            packing=profile.packing,
+            isolate_packed_attention=profile.isolate_packed_attention,
+        )
+        validation_summary = ValidationDataSummary(
+            available_validation_examples=sum(
+                example.split == "validation" for example in all_examples
+            ),
+            selected_examples=raw_validation_summary.selected_examples,
+            optimizer_records=raw_validation_summary.optimizer_records,
+            input_tokens_per_evaluation=(
+                raw_validation_summary.input_tokens_per_epoch
+            ),
+            supervised_tokens_per_evaluation=(
+                raw_validation_summary.supervised_tokens_per_epoch
+            ),
+        )
 
     use_bf16 = profile.dtype == "bfloat16"
     use_fp16 = profile.dtype == "float16"
@@ -217,11 +295,14 @@ def run_tiny_sft(
         bf16=use_bf16,
         fp16=use_fp16,
         gradient_checkpointing=profile.gradient_checkpointing,
+        eval_strategy="steps" if validation_dataset is not None else "no",
+        eval_steps=profile.evaluation_steps if validation_dataset is not None else None,
+        prediction_loss_only=True,
         logging_strategy="steps",
         logging_steps=profile.logging_steps,
         save_strategy="steps",
         save_steps=profile.save_steps,
-        save_total_limit=2,
+        save_total_limit=profile.save_total_limit,
         report_to="none",
         remove_unused_columns=False,
         seed=profile.seed,
@@ -238,6 +319,7 @@ def run_tiny_sft(
         model=model,
         args=arguments,
         train_dataset=dataset,
+        eval_dataset=validation_dataset,
         data_collator=collator,
         processing_class=tokenizer,
     )
@@ -262,6 +344,7 @@ def run_tiny_sft(
     final_dir = destination / "final"
     trainer.save_model(str(final_dir))
     tokenizer.save_pretrained(final_dir)
+    trainer.save_state()
 
     metrics = dict(result.metrics)
     tokens_seen = metrics.get("num_input_tokens_seen")
@@ -277,6 +360,9 @@ def run_tiny_sft(
         "git_commit": _git_commit(),
         "resolved_model_revision": resolved_model_revision,
         "data": asdict(data_summary),
+        "validation_data": (
+            asdict(validation_summary) if validation_summary is not None else None
+        ),
         "parameters": {
             "total": parameter_count,
             "trainable": trainable_parameter_count,
@@ -284,8 +370,13 @@ def run_tiny_sft(
         },
         "runtime": {
             "wall_seconds": wall_seconds,
+            "optimizer_steps": trainer.state.global_step,
+            "completed_epochs": metrics.get("epoch"),
             "input_tokens_seen": tokens_seen,
             "input_tokens_per_second": tokens_seen / wall_seconds,
+            "estimated_supervised_tokens_seen": (
+                data_summary.supervised_tokens_per_epoch * profile.epochs
+            ),
             "peak_allocated_vram_bytes": torch.cuda.max_memory_allocated(),
             "peak_reserved_vram_bytes": torch.cuda.max_memory_reserved(),
         },
@@ -300,6 +391,7 @@ def run_tiny_sft(
             "peft": peft.__version__,
         },
         "trainer_metrics": metrics,
+        "learning_curve": extract_learning_curve(trainer.state.log_history),
         "final_model_dir": str(final_dir),
     }
     (destination / "training-report.json").write_text(

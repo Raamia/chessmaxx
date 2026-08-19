@@ -25,6 +25,13 @@ def _positive_int(value: str) -> int:
     return parsed
 
 
+def _nonnegative_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be a non-negative integer")
+    return parsed
+
+
 def _fraction(value: str) -> float:
     parsed = float(value)
     if not 0 <= parsed < 1:
@@ -54,6 +61,9 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument("--max-per-game", type=_positive_int, default=4)
     build.add_argument("--validation-fraction", type=_fraction, default=0.1)
     build.add_argument("--test-fraction", type=_fraction, default=0.0)
+    build.add_argument("--minimum-train", type=_nonnegative_int, default=0)
+    build.add_argument("--minimum-validation", type=_nonnegative_int, default=0)
+    build.add_argument("--minimum-test", type=_nonnegative_int, default=0)
     build.add_argument("--stockfish", default="stockfish")
     build.add_argument(
         "--cache", type=Path, default=Path("artifacts/training-stockfish-cache.json")
@@ -78,12 +88,36 @@ def run_build(args: argparse.Namespace) -> int:
         minimum_ply=args.minimum_ply,
         max_per_game=args.max_per_game,
     )
+    if len(positions) != args.count:
+        raise ValueError(
+            f"requested {args.count} positions but the PGN supplied only "
+            f"{len(positions)} eligible positions"
+        )
     assignments = split_game_ids(
         (position.game_id or "" for position in positions),
         seed=args.seed,
         validation_fraction=args.validation_fraction,
         test_fraction=args.test_fraction,
     )
+    position_split_counts = Counter(
+        assignments[position.game_id or ""] for position in positions
+    )
+    required = {
+        "train": args.minimum_train,
+        "validation": args.minimum_validation,
+        "test": args.minimum_test,
+    }
+    insufficient = {
+        split: (position_split_counts.get(split, 0), minimum)
+        for split, minimum in required.items()
+        if position_split_counts.get(split, 0) < minimum
+    }
+    if insufficient:
+        details = ", ".join(
+            f"{split}={actual} (minimum {minimum})"
+            for split, (actual, minimum) in insufficient.items()
+        )
+        raise ValueError(f"sampled split is too small: {details}")
     engine_config = StockfishConfig(
         nodes=args.nodes,
         multipv=args.multipv,
@@ -116,6 +150,7 @@ def run_build(args: argparse.Namespace) -> int:
         "max_per_game": args.max_per_game,
         "validation_fraction": args.validation_fraction,
         "test_fraction": args.test_fraction,
+        "minimum_split_counts": required,
         "split_counts": dict(Counter(example.split for example in examples)),
         "game_counts": dict(Counter(assignments.values())),
         "stockfish": asdict(engine_config),

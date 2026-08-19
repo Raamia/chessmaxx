@@ -192,6 +192,61 @@ def test_adapter_cli_evaluates_labelled_validation_split(
     assert report["settings"]["adapter_sha256"]
 
 
+def test_labelled_base_cli_uses_the_same_validation_split(
+    tmp_path, monkeypatch
+):
+    dataset = tmp_path / "training.jsonl"
+    output = tmp_path / "report.json"
+    write_training_examples(
+        dataset,
+        [
+            TrainingExample(
+                example_id="validation-1",
+                game_id="game-1",
+                ply=0,
+                fen=chess.STARTING_FEN,
+                target_move="e2e4",
+                teacher_moves=(TeacherMove("e2e4", 20),),
+                split="validation",
+                source="fixture.pgn",
+            )
+        ],
+    )
+    loaded = {}
+
+    def load_base(model_name, **kwargs):
+        loaded.update({"model_name": model_name, **kwargs})
+        return FakeGenerator()
+
+    monkeypatch.setattr(
+        cli.HuggingFaceMoveGenerator, "from_pretrained", load_base
+    )
+    monkeypatch.setattr(
+        cli.StockfishAnalyzer,
+        "open",
+        lambda *args, **kwargs: FakeAnalyzer(),
+    )
+
+    assert (
+        cli.main(
+            [
+                "labelled-base",
+                "--training-profile",
+                "configs/train/scaled-sft-qwen3-0.6b-isolated.toml",
+                "--dataset",
+                str(dataset),
+                "--output",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert loaded["model_name"] == "Qwen/Qwen3-0.6B-Base"
+    assert report["settings"]["mode"] == "labelled_base"
+    assert report["settings"]["split"] == "validation"
+
+
 def test_sample_pgn_cli_writes_frozen_dataset(tmp_path):
     pgn = tmp_path / "game.pgn"
     output = tmp_path / "sample.jsonl"
@@ -218,3 +273,24 @@ def test_sample_pgn_cli_writes_frozen_dataset(tmp_path):
         == 0
     )
     assert len(cli.load_positions(output)) == 2
+
+
+def test_discovers_adapter_checkpoints_in_step_order(tmp_path):
+    run_dir = tmp_path / "run"
+    for relative in (
+        "checkpoints/checkpoint-100",
+        "checkpoints/checkpoint-25",
+        "checkpoints/not-a-checkpoint",
+        "final",
+    ):
+        directory = run_dir / relative
+        directory.mkdir(parents=True)
+        (directory / "adapter_config.json").write_text("{}", encoding="utf-8")
+
+    discovered = cli.discover_adapter_checkpoints(run_dir)
+
+    assert [(label, step) for label, _, step in discovered] == [
+        ("checkpoint-25", 25),
+        ("checkpoint-100", 100),
+        ("final", None),
+    ]

@@ -249,6 +249,80 @@ chessmaxx-eval adapter `
 
 The adapter report fingerprints the adapter tree, dataset, and training profile. The current ten-position validation split is a wiring check, not a statistically meaningful estimate of chess strength.
 
+## Scaled supervised fine-tuning
+
+Phase 5 moves from intentional memorization to held-out learning. The first scaled profile uses 900 training positions and 100 validation positions for five epochs. It keeps the model, LoRA shape, seed, batch settings, and isolated-packing implementation fixed.
+
+Build a 1,200-position dataset with game-isolated validation and test splits:
+
+```powershell
+chessmaxx-data build `
+  --pgn data/raw/games.pgn `
+  --output data/processed/scaled-sft-v1.jsonl `
+  --count 1200 `
+  --seed 2026 `
+  --minimum-ply 8 `
+  --max-per-game 4 `
+  --validation-fraction 0.1 `
+  --test-fraction 0.1 `
+  --minimum-train 900 `
+  --minimum-validation 100 `
+  --minimum-test 100 `
+  --stockfish C:\path\to\stockfish.exe `
+  --nodes 50000 `
+  --multipv 3
+```
+
+The size checks run before Stockfish starts. With the Phase 3 PGN snapshot this deterministically yields 975 training, 114 validation, and 111 test positions.
+
+Evaluate the pinned base model on validation before training:
+
+```powershell
+chessmaxx-eval labelled-base `
+  --training-profile configs/train/scaled-sft-qwen3-0.6b-isolated.toml `
+  --dataset data/processed/scaled-sft-v1.jsonl `
+  --split validation `
+  --stockfish C:\path\to\stockfish.exe `
+  --cache artifacts/stockfish-cache.json `
+  --output artifacts/evals/scaled-sft-validation-base.json
+```
+
+Run scaled training:
+
+```powershell
+chessmaxx-train `
+  --profile configs/train/scaled-sft-qwen3-0.6b-isolated.toml `
+  --dataset data/processed/scaled-sft-v1.jsonl `
+  --output-dir artifacts/training/scaled-sft-qwen3-0.6b-isolated
+```
+
+The report records training and validation loss every 25 optimizer steps. All scheduled adapters are retained so chess capability can be measured throughout the run.
+
+Evaluate every checkpoint on validation:
+
+```powershell
+chessmaxx-eval checkpoints `
+  --training-profile configs/train/scaled-sft-qwen3-0.6b-isolated.toml `
+  --run-dir artifacts/training/scaled-sft-qwen3-0.6b-isolated `
+  --dataset data/processed/scaled-sft-v1.jsonl `
+  --split validation `
+  --stockfish C:\path\to\stockfish.exe `
+  --cache artifacts/stockfish-cache.json `
+  --output-dir artifacts/evals/scaled-sft-validation-checkpoints
+```
+
+Join systems and chess measurements into one curve artifact:
+
+```powershell
+chessmaxx-eval curve `
+  --base-report artifacts/evals/scaled-sft-validation-base.json `
+  --training-report artifacts/training/scaled-sft-qwen3-0.6b-isolated/training-report.json `
+  --checkpoint-reports artifacts/evals/scaled-sft-validation-checkpoints `
+  --output artifacts/evals/scaled-sft-validation-curve.json
+```
+
+Choose a checkpoint using validation only. Evaluate that checkpoint and the pinned base model once on the untouched test split for the final comparison. Do not use test results to tune the profile or select a checkpoint.
+
 ### Position format
 
 Evaluation sets use one JSON object per line:

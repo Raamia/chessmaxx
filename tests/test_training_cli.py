@@ -1,6 +1,7 @@
 import json
 
 import chess
+import pytest
 
 from chessmaxx.evaluation.schema import TeacherMove
 from chessmaxx.training import cli
@@ -75,3 +76,71 @@ def test_build_command_writes_labeled_isolated_dataset_and_manifest(
     assert len(examples) == 6
     assert set(manifest["split_counts"]) == {"train", "validation"}
     assert manifest["engine"]["name"] == "Fixturefish"
+
+
+def test_build_rejects_insufficient_positions_before_stockfish(
+    tmp_path, monkeypatch
+):
+    pgn = tmp_path / "games.pgn"
+    output = tmp_path / "tiny.jsonl"
+    pgn.write_text(PGN, encoding="utf-8")
+
+    def unexpected_engine(*args, **kwargs):
+        raise AssertionError("Stockfish must not start for an undersized sample")
+
+    monkeypatch.setattr(cli.StockfishAnalyzer, "open", unexpected_engine)
+
+    with pytest.raises(ValueError, match="requested 7 positions"):
+        cli.main(
+            [
+                "build",
+                "--pgn",
+                str(pgn),
+                "--output",
+                str(output),
+                "--count",
+                "7",
+                "--minimum-ply",
+                "0",
+                "--max-per-game",
+                "3",
+            ]
+        )
+
+    assert not output.exists()
+
+
+def test_build_rejects_insufficient_split_before_stockfish(
+    tmp_path, monkeypatch
+):
+    pgn = tmp_path / "games.pgn"
+    output = tmp_path / "tiny.jsonl"
+    pgn.write_text(PGN, encoding="utf-8")
+
+    def unexpected_engine(*args, **kwargs):
+        raise AssertionError("Stockfish must not start for an undersized split")
+
+    monkeypatch.setattr(cli.StockfishAnalyzer, "open", unexpected_engine)
+
+    with pytest.raises(ValueError, match="validation=0"):
+        cli.main(
+            [
+                "build",
+                "--pgn",
+                str(pgn),
+                "--output",
+                str(output),
+                "--count",
+                "6",
+                "--minimum-ply",
+                "0",
+                "--max-per-game",
+                "3",
+                "--validation-fraction",
+                "0",
+                "--minimum-validation",
+                "1",
+            ]
+        )
+
+    assert not output.exists()

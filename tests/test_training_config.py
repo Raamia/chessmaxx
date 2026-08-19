@@ -62,6 +62,20 @@ def test_isolated_profile_only_enables_attention_isolation():
     }
 
 
+def test_scaled_profile_enables_held_out_training_evaluation():
+    profile = load_tiny_sft_profile(
+        "configs/train/scaled-sft-qwen3-0.6b-isolated.toml"
+    )
+
+    assert profile.max_examples == 900
+    assert profile.max_validation_examples == 100
+    assert profile.epochs == 5.0
+    assert profile.packing is True
+    assert profile.isolate_packed_attention is True
+    assert profile.evaluation_steps == 25
+    assert profile.save_total_limit == 20
+
+
 def test_rejects_unknown_training_setting():
     with pytest.raises(ValueError, match="unknown tiny-SFT setting"):
         TinySFTProfile.from_dict(
