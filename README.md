@@ -323,6 +323,73 @@ chessmaxx-eval curve `
 
 Choose a checkpoint using validation only. Evaluate that checkpoint and the pinned base model once on the untouched test split for the final comparison. Do not use test results to tune the profile or select a checkpoint.
 
+## Multi-PV policy distillation
+
+Phase 6 uses more of the Stockfish supervision that is already present in each training record. Hard SFT learns only the primary move. The policy objective keeps up to three ranked moves and converts their centipawn scores into a soft target:
+
+```text
+p(move i) = exp((score_i - max_score) / temperature_cp) / Z
+```
+
+This is multi-PV policy distillation, not literal vocabulary-logit distillation. Stockfish supplies search utilities over legal moves rather than logits over Qwen's 151,936-token vocabulary. Naming that distinction explicitly keeps the experiment and its conclusions honest.
+
+For every position, the dense PyTorch reference runs each candidate response through the model, sums the response-token log probabilities, and normalizes those sequence scores into a student policy. Training blends KL divergence from the Stockfish policy with ordinary loss on Stockfish's top move. The control profile uses the same 900 training positions, 100 validation positions, five epochs, LoRA configuration, optimizer batch, and seed as Phase 5. Packing is disabled because each record is now a group of alternative responses to one prompt.
+
+Run the dense control on the CUDA machine:
+
+```powershell
+chessmaxx-train `
+  --profile configs/train/scaled-distill-qwen3-0.6b.toml `
+  --dataset data/processed/scaled-sft-v1.jsonl `
+  --output-dir artifacts/training/scaled-distill-qwen3-0.6b
+```
+
+The training report adds candidate count, teacher top-1 probability, teacher entropy, maximum candidate length, and estimated BF16-logit and FP32-loss-tensor bytes for the longest physical batch. Together with measured peak VRAM and throughput, these fields define the dense-memory baseline that a future sparse PyTorch or Triton implementation must beat.
+
+First evaluate normal greedy generation. This remains the authoritative measurement of whether the model can produce a legal move without help:
+
+```powershell
+chessmaxx-eval adapter `
+  --training-profile configs/train/scaled-distill-qwen3-0.6b.toml `
+  --adapter-dir artifacts/training/scaled-distill-qwen3-0.6b/final `
+  --dataset data/processed/scaled-sft-v1.jsonl `
+  --split validation `
+  --selection greedy `
+  --stockfish C:\path\to\stockfish.exe `
+  --cache artifacts/stockfish-cache.json `
+  --output artifacts/evals/scaled-distill-validation-greedy.json
+```
+
+Then separately diagnose the learned policy by asking the model to rank every legal move by complete response-sequence likelihood:
+
+```powershell
+chessmaxx-eval adapter `
+  --training-profile configs/train/scaled-distill-qwen3-0.6b.toml `
+  --adapter-dir artifacts/training/scaled-distill-qwen3-0.6b/final `
+  --dataset data/processed/scaled-sft-v1.jsonl `
+  --split validation `
+  --selection legal-rerank `
+  --candidate-batch-size 16 `
+  --stockfish C:\path\to\stockfish.exe `
+  --cache artifacts/stockfish-cache.json `
+  --output artifacts/evals/scaled-distill-validation-rerank.json
+```
+
+Legal reranking has a structurally 100% legal-move rate, so that number must never be compared with greedy first-try legality. Its useful measurements are Stockfish top-1/top-k agreement, centipawn regret, blunder rate, latency, and candidate-scoring telemetry.
+
+### Phase 6 acceptance checks
+
+On the RTX 3060 Ti, the dense run should:
+
+- Complete without an out-of-memory failure and report peak allocated and reserved VRAM.
+- Record finite training and validation policy loss throughout the run.
+- Retain the same dataset and profile fingerprints across reports.
+- Compare greedy hard-SFT and policy-distilled adapters on the same validation split.
+- Select the final checkpoint using validation only, then evaluate it once on the untouched test split.
+- Run legal reranking as a separate policy diagnostic, never as a replacement for greedy legality.
+
+The first systems comparison is dense hard SFT versus dense multi-PV policy distillation: throughput, peak VRAM, and chess metrics under the same hardware and data budget. The dense policy implementation is intentionally straightforward; its measured allocation is the target for the later sparse loss and Triton-kernel phases.
+
 ### Position format
 
 Evaluation sets use one JSON object per line:
