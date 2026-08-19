@@ -79,3 +79,79 @@ def test_packaged_smoke_dataset_is_valid():
 
     assert len(positions) == 3
 
+
+def test_baseline_cli_uses_checked_in_profile(tmp_path, monkeypatch):
+    dataset = tmp_path / "positions.jsonl"
+    output = tmp_path / "report.json"
+    write_positions(
+        dataset,
+        [
+            EvaluationPosition(
+                "start",
+                chess.STARTING_FEN,
+                teacher_moves=(TeacherMove("e2e4", 20),),
+            )
+        ],
+    )
+    loaded = {}
+
+    def load_model(model_name, **kwargs):
+        loaded.update({"model_name": model_name, **kwargs})
+        return FakeGenerator()
+
+    monkeypatch.setattr(
+        cli.HuggingFaceMoveGenerator, "from_pretrained", load_model
+    )
+    monkeypatch.setattr(
+        cli.StockfishAnalyzer,
+        "open",
+        lambda *args, **kwargs: FakeAnalyzer(),
+    )
+
+    assert (
+        cli.main(
+            [
+                "baseline",
+                "--profile",
+                "configs/baseline/qwen3-0.6b-base.toml",
+                "--dataset",
+                str(dataset),
+                "--output",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert loaded["model_name"] == "Qwen/Qwen3-0.6B-Base"
+    assert loaded["revision"] == "main"
+    assert report["settings"]["mode"] == "baseline"
+    assert report["settings"]["profile_sha256"]
+
+
+def test_sample_pgn_cli_writes_frozen_dataset(tmp_path):
+    pgn = tmp_path / "game.pgn"
+    output = tmp_path / "sample.jsonl"
+    pgn.write_text(
+        '[Event "Fixture"]\n[Result "*"]\n\n'
+        "1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 *\n",
+        encoding="utf-8",
+    )
+
+    assert (
+        cli.main(
+            [
+                "sample-pgn",
+                "--pgn",
+                str(pgn),
+                "--output",
+                str(output),
+                "--count",
+                "2",
+                "--minimum-ply",
+                "0",
+            ]
+        )
+        == 0
+    )
+    assert len(cli.load_positions(output)) == 2
