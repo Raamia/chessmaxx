@@ -1,4 +1,4 @@
-from dataclasses import asdict
+from dataclasses import asdict, replace
 
 import pytest
 
@@ -55,3 +55,12 @@ def test_rejects_unknown_training_setting():
 def test_rejects_unsafe_training_values(values):
     with pytest.raises(ValueError):
         TinySFTProfile.from_dict(values)
+
+
+def test_isolated_attention_requires_packing():
+    profile = load_tiny_sft_profile(
+        "configs/train/tiny-sft-qwen3-0.6b-unpacked.toml"
+    )
+
+    with pytest.raises(ValueError, match="requires packing"):
+        replace(profile, isolate_packed_attention=True)
