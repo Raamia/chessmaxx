@@ -6,6 +6,8 @@ from chessmaxx.evaluation import cli
 from chessmaxx.evaluation.dataset import write_positions
 from chessmaxx.evaluation.model import GeneratedMove
 from chessmaxx.evaluation.schema import EvaluationPosition, TeacherMove
+from chessmaxx.training.dataset import write_training_examples
+from chessmaxx.training.schema import TrainingExample
 
 
 class FakeGenerator:
@@ -127,6 +129,67 @@ def test_baseline_cli_uses_checked_in_profile(tmp_path, monkeypatch):
     assert loaded["revision"] == "main"
     assert report["settings"]["mode"] == "baseline"
     assert report["settings"]["profile_sha256"]
+
+
+def test_adapter_cli_evaluates_labelled_validation_split(
+    tmp_path, monkeypatch
+):
+    dataset = tmp_path / "training.jsonl"
+    adapter = tmp_path / "adapter"
+    output = tmp_path / "report.json"
+    adapter.mkdir()
+    (adapter / "adapter_config.json").write_text("{}", encoding="utf-8")
+    write_training_examples(
+        dataset,
+        [
+            TrainingExample(
+                example_id="validation-1",
+                game_id="game-1",
+                ply=0,
+                fen=chess.STARTING_FEN,
+                target_move="e2e4",
+                teacher_moves=(TeacherMove("e2e4", 20),),
+                split="validation",
+                source="fixture.pgn",
+            )
+        ],
+    )
+    loaded = {}
+
+    def load_adapter(path, **kwargs):
+        loaded.update({"path": path, **kwargs})
+        return FakeGenerator()
+
+    monkeypatch.setattr(
+        cli.HuggingFaceMoveGenerator, "from_adapter", load_adapter
+    )
+    monkeypatch.setattr(
+        cli.StockfishAnalyzer,
+        "open",
+        lambda *args, **kwargs: FakeAnalyzer(),
+    )
+
+    assert (
+        cli.main(
+            [
+                "adapter",
+                "--training-profile",
+                "configs/train/tiny-sft-qwen3-0.6b-unpacked.toml",
+                "--adapter-dir",
+                str(adapter),
+                "--dataset",
+                str(dataset),
+                "--output",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert loaded["base_model_name"] == "Qwen/Qwen3-0.6B-Base"
+    assert report["settings"]["mode"] == "adapter"
+    assert report["settings"]["split"] == "validation"
+    assert report["settings"]["adapter_sha256"]
 
 
 def test_sample_pgn_cli_writes_frozen_dataset(tmp_path):
