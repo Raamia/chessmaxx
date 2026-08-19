@@ -8,6 +8,7 @@ from chessmaxx.training.distillation import (
     PolicyTokenDataset,
     centipawn_policy,
     encode_policy_example,
+    pad_policy_records,
     policy_entropy,
 )
 from chessmaxx.training.schema import TrainingExample
@@ -113,3 +114,31 @@ def test_policy_dataset_preserves_candidate_groups():
     assert item["example_id"] == "position-1"
     assert len(item["input_ids"]) == 2
     assert len(item["teacher_probabilities"]) == 2
+
+
+def test_policy_collation_pads_candidates_and_tokens_independently():
+    batch = pad_policy_records(
+        [
+            {
+                "input_ids": [[1, 2, 3], [1, 4]],
+                "attention_mask": [[1, 1, 1], [1, 1]],
+                "labels": [[-100, 2, 3], [-100, 4]],
+                "teacher_probabilities": [0.7, 0.3],
+            },
+            {
+                "input_ids": [[5, 6]],
+                "attention_mask": [[1, 1]],
+                "labels": [[-100, 6]],
+                "teacher_probabilities": [1.0],
+            },
+        ],
+        pad_token_id=0,
+    )
+
+    assert batch["input_ids"] == [
+        [[1, 2, 3], [1, 4, 0]],
+        [[5, 6, 0], [0, 0, 0]],
+    ]
+    assert batch["labels"][1][1] == [-100, -100, -100]
+    assert batch["teacher_probabilities"] == [[0.7, 0.3], [1.0, 0.0]]
+    assert batch["candidate_mask"] == [[True, True], [True, False]]

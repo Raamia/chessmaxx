@@ -139,3 +139,88 @@ class PolicyTokenDataset:
             "labels": [list(candidate.labels) for candidate in item.candidates],
             "teacher_probabilities": list(item.teacher_probabilities),
         }
+
+
+def pad_policy_records(
+    records: list[dict[str, Any]], *, pad_token_id: int
+) -> dict[str, Any]:
+    """Pad candidate and token dimensions while preserving position groups."""
+
+    if not records:
+        raise ValueError("cannot collate an empty policy batch")
+    max_candidates = max(len(record["input_ids"]) for record in records)
+    max_length = max(
+        len(candidate)
+        for record in records
+        for candidate in record["input_ids"]
+    )
+    batch: dict[str, Any] = {
+        "input_ids": [],
+        "attention_mask": [],
+        "labels": [],
+        "teacher_probabilities": [],
+        "candidate_mask": [],
+    }
+    for record in records:
+        candidate_count = len(record["input_ids"])
+        if not candidate_count:
+            raise ValueError("policy example contains no candidates")
+        if not (
+            len(record["attention_mask"])
+            == len(record["labels"])
+            == len(record["teacher_probabilities"])
+            == candidate_count
+        ):
+            raise ValueError("policy candidate fields have different lengths")
+        input_rows: list[list[int]] = []
+        attention_rows: list[list[int]] = []
+        label_rows: list[list[int]] = []
+        for input_ids, attention_mask, labels in zip(
+            record["input_ids"],
+            record["attention_mask"],
+            record["labels"],
+            strict=True,
+        ):
+            padding = max_length - len(input_ids)
+            input_rows.append(input_ids + [pad_token_id] * padding)
+            attention_rows.append(attention_mask + [0] * padding)
+            label_rows.append(labels + [-100] * padding)
+        for _ in range(max_candidates - candidate_count):
+            input_rows.append([pad_token_id] * max_length)
+            attention_rows.append([0] * max_length)
+            label_rows.append([-100] * max_length)
+        batch["input_ids"].append(input_rows)
+        batch["attention_mask"].append(attention_rows)
+        batch["labels"].append(label_rows)
+        batch["teacher_probabilities"].append(
+            record["teacher_probabilities"] + [0.0] * (max_candidates - candidate_count)
+        )
+        batch["candidate_mask"].append(
+            [True] * candidate_count + [False] * (max_candidates - candidate_count)
+        )
+    return batch
+
+
+class PolicyCollator:
+    def __init__(self, pad_token_id: int) -> None:
+        self.pad_token_id = pad_token_id
+
+    def __call__(self, records: list[dict[str, Any]]) -> dict[str, Any]:
+        try:
+            import torch
+        except ImportError as exc:
+            raise RuntimeError("training requires the optional model dependencies") from exc
+        padded = pad_policy_records(records, pad_token_id=self.pad_token_id)
+        return {
+            "input_ids": torch.tensor(padded["input_ids"], dtype=torch.long),
+            "attention_mask": torch.tensor(
+                padded["attention_mask"], dtype=torch.long
+            ),
+            "labels": torch.tensor(padded["labels"], dtype=torch.long),
+            "teacher_probabilities": torch.tensor(
+                padded["teacher_probabilities"], dtype=torch.float32
+            ),
+            "candidate_mask": torch.tensor(
+                padded["candidate_mask"], dtype=torch.bool
+            ),
+        }
