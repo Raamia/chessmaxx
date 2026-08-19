@@ -16,6 +16,7 @@ class TinySFTProfile:
     method: str = "lora"
     dtype: str = "bfloat16"
     max_examples: int = 100
+    max_validation_examples: int = 0
     max_length: int = 256
     packing: bool = True
     isolate_packed_attention: bool = False
@@ -28,6 +29,7 @@ class TinySFTProfile:
     max_grad_norm: float = 1.0
     gradient_checkpointing: bool = True
     logging_steps: int = 1
+    evaluation_steps: int = 25
     save_steps: int = 25
     seed: int = 2026
     lora_rank: int = 16
@@ -50,12 +52,15 @@ class TinySFTProfile:
             "per_device_batch_size",
             "gradient_accumulation_steps",
             "logging_steps",
+            "evaluation_steps",
             "save_steps",
             "lora_rank",
             "lora_alpha",
         ):
             if getattr(self, field_name) <= 0:
                 raise ValueError(f"{field_name} must be positive")
+        if self.max_validation_examples < 0:
+            raise ValueError("max_validation_examples must be non-negative")
         for field_name in ("epochs", "learning_rate", "max_grad_norm"):
             if getattr(self, field_name) <= 0:
                 raise ValueError(f"{field_name} must be positive")
