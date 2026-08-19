@@ -14,6 +14,12 @@ import chess.engine
 from chessmaxx.evaluation.schema import TeacherMove
 
 
+def _normalize_moves(
+    moves: tuple[TeacherMove, ...] | list[TeacherMove],
+) -> tuple[TeacherMove, ...]:
+    return tuple(sorted(moves, key=lambda move: (-move.score_cp, move.move)))
+
+
 @dataclass(frozen=True, slots=True)
 class StockfishConfig:
     """Engine settings that affect teacher labels and evaluation scores."""
@@ -62,10 +68,15 @@ class AnalysisCache:
         value = self._values.get(key)
         if value is None:
             return None
-        return tuple(TeacherMove.from_dict(move) for move in value)
+        moves = tuple(TeacherMove.from_dict(move) for move in value)
+        normalized = _normalize_moves(moves)
+        if normalized != moves:
+            self.put(key, normalized)
+        return normalized
 
     def put(self, key: str, moves: tuple[TeacherMove, ...]) -> None:
-        self._values[key] = [move.to_dict() for move in moves]
+        normalized = _normalize_moves(moves)
+        self._values[key] = [move.to_dict() for move in normalized]
         if self.path is None:
             return
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -174,4 +185,4 @@ class StockfishAnalyzer:
                 continue
             seen.add(pv[0])
             moves.append(TeacherMove(move=pv[0].uci(), score_cp=centipawns))
-        return tuple(moves)
+        return _normalize_moves(moves)
