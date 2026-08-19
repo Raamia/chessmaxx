@@ -99,33 +99,13 @@ def load_lora_generator(
     device: str = "cuda",
     max_new_tokens: int = 8,
 ) -> HuggingFaceMoveGenerator:
-    try:
-        import peft
-        import torch
-        import transformers
-    except ImportError as exc:
-        raise RuntimeError(
-            "adapter evaluation requires `pip install -e '.[train]'`"
-        ) from exc
-    if device.startswith("cuda") and not torch.cuda.is_available():
-        raise RuntimeError("CUDA was requested but is not available")
-    selected_dtype = getattr(torch, profile.dtype)
-    adapter = Path(adapter_dir).resolve()
-    tokenizer = transformers.AutoTokenizer.from_pretrained(adapter)
-    base_model = transformers.AutoModelForCausalLM.from_pretrained(
-        profile.model_id,
+    return HuggingFaceMoveGenerator.from_adapter(
+        adapter_dir,
+        base_model_name=profile.model_id,
         revision=profile.revision,
-        dtype=selected_dtype,
-    )
-    model = peft.PeftModel.from_pretrained(base_model, adapter).to(device)
-    return HuggingFaceMoveGenerator(
-        model=model,
-        tokenizer=tokenizer,
-        model_name=str(adapter),
         device=device,
         max_new_tokens=max_new_tokens,
-        revision=profile.revision,
-        transformers_version=transformers.__version__,
+        dtype=profile.dtype,
     )
 
 
