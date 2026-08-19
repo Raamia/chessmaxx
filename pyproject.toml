@@ -15,6 +15,7 @@ dependencies = [
 [project.scripts]
 chessmaxx-eval = "chessmaxx.evaluation.cli:main"
 chessmaxx-data = "chessmaxx.training.cli:main"
+chessmaxx-train = "chessmaxx.training.train_cli:main"
 
 [project.optional-dependencies]
 model = [
