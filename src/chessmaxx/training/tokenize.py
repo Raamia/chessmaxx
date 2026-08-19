@@ -42,16 +42,33 @@ def encode_training_example(
     *,
     max_length: int,
 ) -> EncodedExample:
+    return encode_prompt_target(
+        example_id=example.example_id,
+        fen=example.fen,
+        move_uci=example.target_move,
+        tokenizer=tokenizer,
+        max_length=max_length,
+    )
+
+
+def encode_prompt_target(
+    *,
+    example_id: str,
+    fen: str,
+    move_uci: str,
+    tokenizer: TokenizerLike,
+    max_length: int,
+) -> EncodedExample:
     if max_length <= 0:
         raise ValueError("max_length must be positive")
     if tokenizer.eos_token_id is None:
         raise ValueError("tokenizer must define eos_token_id")
 
     prompt_ids = tokenizer.encode(
-        build_prompt(example.fen), add_special_tokens=True
+        build_prompt(fen), add_special_tokens=True
     )
     target_ids = tokenizer.encode(
-        format_target(example.target_move), add_special_tokens=False
+        format_target(move_uci), add_special_tokens=False
     )
     if not target_ids:
         raise ValueError("target move encoded to zero tokens")
@@ -59,12 +76,12 @@ def encode_training_example(
     input_ids = [*prompt_ids, *response_ids]
     if len(input_ids) > max_length:
         raise ValueError(
-            f"example {example.example_id!r} needs {len(input_ids)} tokens, "
+            f"example {example_id!r} needs {len(input_ids)} tokens, "
             f"exceeding max_length={max_length}"
         )
     labels = [IGNORE_INDEX] * len(prompt_ids) + response_ids
     return EncodedExample(
-        example_id=example.example_id,
+        example_id=example_id,
         input_ids=tuple(input_ids),
         attention_mask=(1,) * len(input_ids),
         labels=tuple(labels),
@@ -96,4 +113,3 @@ class SupervisedTokenDataset:
             "attention_mask": list(item.attention_mask),
             "labels": list(item.labels),
         }
-
