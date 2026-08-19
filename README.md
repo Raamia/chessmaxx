@@ -167,28 +167,28 @@ The command writes the versioned JSONL dataset, a SHA-256 manifest, and an appen
 
 ### Run and resume tiny SFT
 
-The checked-in profile pins the Qwen revision validated in Phase 2 and uses BF16, response-only labels, greedy sequence packing, gradient checkpointing, a physical batch size of 2, eight examples per optimizer step through gradient accumulation, and rank-16 LoRA over all linear layers:
+The correctness-reference profile pins the Qwen revision validated in Phase 2 and uses BF16, response-only labels, gradient checkpointing, a physical batch size of 2, eight examples per optimizer step through gradient accumulation, and rank-16 LoRA over all linear layers. It deliberately disables packing:
 
 ```powershell
 chessmaxx-train `
-  --profile configs/train/tiny-sft-qwen3-0.6b.toml `
+  --profile configs/train/tiny-sft-qwen3-0.6b-unpacked.toml `
   --dataset data/processed/tiny-sft-v1.jsonl `
-  --output-dir artifacts/training/tiny-sft-qwen3-0.6b
+  --output-dir artifacts/training/tiny-sft-qwen3-0.6b-unpacked
 ```
 
 To resume an interrupted run, point at one of the saved checkpoint directories:
 
 ```powershell
 chessmaxx-train `
-  --profile configs/train/tiny-sft-qwen3-0.6b.toml `
+  --profile configs/train/tiny-sft-qwen3-0.6b-unpacked.toml `
   --dataset data/processed/tiny-sft-v1.jsonl `
-  --output-dir artifacts/training/tiny-sft-qwen3-0.6b `
-  --resume-from-checkpoint artifacts/training/tiny-sft-qwen3-0.6b/checkpoints/checkpoint-25
+  --output-dir artifacts/training/tiny-sft-qwen3-0.6b-unpacked `
+  --resume-from-checkpoint artifacts/training/tiny-sft-qwen3-0.6b-unpacked/checkpoints/checkpoint-25
 ```
 
 The run refuses to silently train on CPU. It saves checkpoints under `checkpoints/`, the final adapter and tokenizer under `final/`, and `training-report.json` at the run root. The report fingerprints the profile and dataset and records model revision, parameter counts, package versions, GPU identity, peak VRAM, wall time, and input-token throughput.
 
-Packing concatenates complete examples and never truncates a target. Prompt tokens and padding use ignored labels, so only the move and EOS token contribute directly to loss. This first implementation uses ordinary causal attention across packed-example boundaries; block-diagonal attention isolation is a later optimization to benchmark explicitly.
+The original `tiny-sft-qwen3-0.6b.toml` profile is retained only as the naive-packing baseline. It concatenates complete examples and masks prompt loss, but its ordinary causal attention crosses example boundaries. Do not use it as a correctness reference.
 
 ### Verify memorization
 
@@ -196,14 +196,58 @@ Reload the final adapter and evaluate the same 100 training examples:
 
 ```powershell
 chessmaxx-memorize `
-  --profile configs/train/tiny-sft-qwen3-0.6b.toml `
+  --profile configs/train/tiny-sft-qwen3-0.6b-unpacked.toml `
   --dataset data/processed/tiny-sft-v1.jsonl `
-  --adapter-dir artifacts/training/tiny-sft-qwen3-0.6b/final `
-  --output artifacts/evals/tiny-sft-memorization.json `
+  --adapter-dir artifacts/training/tiny-sft-qwen3-0.6b-unpacked/final `
+  --output artifacts/evals/tiny-sft-memorization-unpacked.json `
   --batch-size 8
 ```
 
 The report keeps every raw response and separately measures parse rate, legal-move rate, target-move accuracy, and exact-response accuracy. If target accuracy remains low, the tiny experiment should be debugged or deliberately overfit further before scaling the dataset.
+
+## Isolated sequence packing
+
+The first packing experiment made training 2.66 times faster, but isolated evaluation exposed a perfect boundary failure: all 37 examples at the start of a pack were memorized, while all 63 later examples failed. Disabling packing restored 100% isolated accuracy.
+
+| Layout | Records | Steps | Input tokens/s | Wall time | Legal moves | Target accuracy |
+|---|---:|---:|---:|---:|---:|---:|
+| Naive causal packing | 37 | 100 | 1,308.34 | 135.40 s | 46% | 37% |
+| Unpacked control | 100 | 260 | 491.36 | 348.32 s | 100% | 100% |
+
+Phase 4 adds a third controlled profile. It retains the same greedy packs but supplies Qwen's SDPA backend with a boolean 4D block-causal mask. Tokens can attend only to earlier tokens from their own example, and rotary position IDs restart at every boundary.
+
+```powershell
+chessmaxx-train `
+  --profile configs/train/tiny-sft-qwen3-0.6b-isolated.toml `
+  --dataset data/processed/tiny-sft-v1.jsonl `
+  --output-dir artifacts/training/tiny-sft-qwen3-0.6b-isolated
+
+chessmaxx-memorize `
+  --profile configs/train/tiny-sft-qwen3-0.6b-isolated.toml `
+  --dataset data/processed/tiny-sft-v1.jsonl `
+  --adapter-dir artifacts/training/tiny-sft-qwen3-0.6b-isolated/final `
+  --output artifacts/evals/tiny-sft-memorization-isolated.json `
+  --batch-size 8
+```
+
+The isolated run must match the unpacked control's 100-example memorization result before its throughput is treated as valid. A fast run with incorrect attention semantics is not an optimization.
+
+### Held-out adapter evaluation
+
+The memorization check is intentionally in-sample. Evaluate any saved adapter on the game-isolated validation split through the normal Stockfish harness:
+
+```powershell
+chessmaxx-eval adapter `
+  --training-profile configs/train/tiny-sft-qwen3-0.6b-isolated.toml `
+  --adapter-dir artifacts/training/tiny-sft-qwen3-0.6b-isolated/final `
+  --dataset data/processed/tiny-sft-v1.jsonl `
+  --split validation `
+  --stockfish C:\path\to\stockfish.exe `
+  --cache artifacts/stockfish-cache.json `
+  --output artifacts/evals/tiny-sft-validation-isolated.json
+```
+
+The adapter report fingerprints the adapter tree, dataset, and training profile. The current ten-position validation split is a wiring check, not a statistically meaningful estimate of chess strength.
 
 ### Position format
 
