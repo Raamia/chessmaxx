@@ -224,3 +224,92 @@ class PolicyCollator:
                 padded["candidate_mask"], dtype=torch.bool
             ),
         }
+
+
+def candidate_sequence_log_likelihoods(logits: Any, labels: Any) -> tuple[Any, Any]:
+    """Sum causal token log-probabilities for every candidate sequence."""
+
+    try:
+        import torch
+        import torch.nn.functional as functional
+    except ImportError as exc:
+        raise RuntimeError("distillation loss requires PyTorch") from exc
+    if logits.ndim != 4 or labels.ndim != 3:
+        raise ValueError("expected logits [B,K,L,V] and labels [B,K,L]")
+    if logits.shape[:3] != labels.shape:
+        raise ValueError("logit and label dimensions do not match")
+    shifted_logits = logits[..., :-1, :].float()
+    shifted_labels = labels[..., 1:]
+    supervised = shifted_labels != -100
+    safe_labels = shifted_labels.masked_fill(~supervised, 0)
+    token_log_probabilities = functional.log_softmax(
+        shifted_logits, dim=-1
+    ).gather(-1, safe_labels.unsqueeze(-1)).squeeze(-1)
+    sequence_scores = (token_log_probabilities * supervised).sum(dim=-1)
+    token_counts = supervised.sum(dim=-1)
+    return sequence_scores, token_counts
+
+
+def dense_policy_objective(
+    sequence_log_likelihoods: Any,
+    supervised_token_counts: Any,
+    teacher_probabilities: Any,
+    candidate_mask: Any,
+    *,
+    hard_loss_weight: float,
+    student_temperature: float,
+) -> dict[str, Any]:
+    """Blend top-1 response loss with KL over candidate sequence scores."""
+
+    try:
+        import torch
+        import torch.nn.functional as functional
+    except ImportError as exc:
+        raise RuntimeError("distillation loss requires PyTorch") from exc
+    if not 0 <= hard_loss_weight <= 1:
+        raise ValueError("hard_loss_weight must be in [0, 1]")
+    if student_temperature <= 0:
+        raise ValueError("student_temperature must be positive")
+    expected_shape = sequence_log_likelihoods.shape
+    if any(
+        value.shape != expected_shape
+        for value in (
+            supervised_token_counts,
+            teacher_probabilities,
+            candidate_mask,
+        )
+    ):
+        raise ValueError("policy tensors must share shape [B,K]")
+    if torch.any(candidate_mask.sum(dim=-1) == 0):
+        raise ValueError("every policy group must contain a candidate")
+    if torch.any(supervised_token_counts.masked_select(candidate_mask) == 0):
+        raise ValueError("every real candidate must contain a supervised token")
+
+    masked_scores = (sequence_log_likelihoods / student_temperature).masked_fill(
+        ~candidate_mask, float("-inf")
+    )
+    student_log_policy = functional.log_softmax(masked_scores, dim=-1)
+    positive_teacher = teacher_probabilities > 0
+    teacher_log_policy = torch.where(
+        positive_teacher,
+        teacher_probabilities.log(),
+        torch.zeros_like(teacher_probabilities),
+    )
+    policy_loss = (
+        teacher_probabilities
+        * (teacher_log_policy - student_log_policy.masked_fill(~candidate_mask, 0.0))
+    ).sum(dim=-1).mean()
+
+    top_indices = teacher_probabilities.argmax(dim=-1, keepdim=True)
+    top_scores = sequence_log_likelihoods.gather(-1, top_indices).squeeze(-1)
+    top_token_counts = supervised_token_counts.gather(
+        -1, top_indices
+    ).squeeze(-1)
+    hard_loss = (-top_scores / top_token_counts).mean()
+    loss = hard_loss_weight * hard_loss + (1 - hard_loss_weight) * policy_loss
+    return {
+        "loss": loss,
+        "hard_loss": hard_loss.detach(),
+        "policy_loss": policy_loss.detach(),
+        "student_log_policy": student_log_policy.detach(),
+    }
