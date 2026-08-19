@@ -3,6 +3,7 @@ import pytest
 from chessmaxx.training.packing import (
     IsolatedPackedTokenDataset,
     pack_encoded_examples,
+    pad_isolated_records,
     pad_records,
 )
 from chessmaxx.training.tokenize import EncodedExample, IGNORE_INDEX
@@ -68,3 +69,40 @@ def test_padding_masks_pad_tokens_out_of_attention_and_loss():
     assert batch["input_ids"] == [[1, 2], [3, 0]]
     assert batch["attention_mask"] == [[1, 1], [1, 0]]
     assert batch["labels"] == [[-100, 2], [3, -100]]
+
+
+def test_isolated_padding_builds_block_causal_attention():
+    batch = pad_isolated_records(
+        [
+            {
+                "input_ids": [10, 11, 20, 21],
+                "attention_mask": [1, 1, 1, 1],
+                "labels": [-100, 11, -100, 21],
+                "segment_ids": [0, 0, 1, 1],
+                "position_ids": [0, 1, 0, 1],
+            },
+            {
+                "input_ids": [30, 31],
+                "attention_mask": [1, 1],
+                "labels": [-100, 31],
+                "segment_ids": [0, 0],
+                "position_ids": [0, 1],
+            },
+        ],
+        pad_token_id=0,
+    )
+
+    assert batch["position_ids"] == [[0, 1, 0, 1], [0, 1, 0, 0]]
+    assert batch["segment_ids"] == [[0, 0, 1, 1], [0, 0, -1, -1]]
+    assert batch["attention_mask"][0][0] == [
+        [True, False, False, False],
+        [True, True, False, False],
+        [False, False, True, False],
+        [False, False, True, True],
+    ]
+    assert batch["attention_mask"][1][0] == [
+        [True, False, False, False],
+        [True, True, False, False],
+        [False, False, True, False],
+        [False, False, False, True],
+    ]
