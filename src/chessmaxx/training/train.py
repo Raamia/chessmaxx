@@ -137,6 +137,32 @@ def _warmup_arguments(
     )
 
 
+def extract_learning_curve(
+    log_history: list[dict[str, Any]],
+) -> list[dict[str, int | float]]:
+    """Merge Trainer loss, validation, and optimizer logs by global step."""
+
+    points: dict[int, dict[str, int | float]] = {}
+    retained = {
+        "epoch",
+        "loss",
+        "eval_loss",
+        "learning_rate",
+        "grad_norm",
+        "eval_runtime",
+    }
+    for entry in log_history:
+        step = entry.get("step")
+        if not isinstance(step, int):
+            continue
+        point = points.setdefault(step, {"step": step})
+        for key in retained:
+            value = entry.get(key)
+            if isinstance(value, (int, float)):
+                point[key] = value
+    return [points[step] for step in sorted(points)]
+
+
 def run_tiny_sft(
     profile: TinySFTProfile,
     *,
@@ -318,6 +344,7 @@ def run_tiny_sft(
     final_dir = destination / "final"
     trainer.save_model(str(final_dir))
     tokenizer.save_pretrained(final_dir)
+    trainer.save_state()
 
     metrics = dict(result.metrics)
     tokens_seen = metrics.get("num_input_tokens_seen")
@@ -343,8 +370,13 @@ def run_tiny_sft(
         },
         "runtime": {
             "wall_seconds": wall_seconds,
+            "optimizer_steps": trainer.state.global_step,
+            "completed_epochs": metrics.get("epoch"),
             "input_tokens_seen": tokens_seen,
             "input_tokens_per_second": tokens_seen / wall_seconds,
+            "estimated_supervised_tokens_seen": (
+                data_summary.supervised_tokens_per_epoch * profile.epochs
+            ),
             "peak_allocated_vram_bytes": torch.cuda.max_memory_allocated(),
             "peak_reserved_vram_bytes": torch.cuda.max_memory_reserved(),
         },
@@ -359,6 +391,7 @@ def run_tiny_sft(
             "peft": peft.__version__,
         },
         "trainer_metrics": metrics,
+        "learning_curve": extract_learning_curve(trainer.state.log_history),
         "final_model_dir": str(final_dir),
     }
     (destination / "training-report.json").write_text(

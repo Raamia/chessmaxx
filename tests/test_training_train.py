@@ -6,6 +6,7 @@ from chessmaxx.evaluation.schema import TeacherMove
 from chessmaxx.training.schema import TrainingExample
 from chessmaxx.training.train import (
     _warmup_arguments,
+    extract_learning_curve,
     prepare_training_dataset,
     select_split_examples,
     select_training_examples,
@@ -120,6 +121,34 @@ def test_warmup_arguments_rejects_unknown_signature() -> None:
         assert "neither warmup_ratio nor warmup_steps" in str(exc)
     else:
         raise AssertionError("expected unsupported warmup arguments to fail")
+
+
+def test_learning_curve_merges_train_and_validation_logs_by_step() -> None:
+    curve = extract_learning_curve(
+        [
+            {"loss": 1.2, "learning_rate": 0.001, "epoch": 1.0, "step": 25},
+            {"eval_loss": 1.1, "eval_runtime": 2.0, "epoch": 1.0, "step": 25},
+            {"loss": 0.8, "learning_rate": 0.0005, "epoch": 2.0, "step": 50},
+            {"train_runtime": 10.0, "step": 50},
+        ]
+    )
+
+    assert curve == [
+        {
+            "step": 25,
+            "loss": 1.2,
+            "eval_loss": 1.1,
+            "learning_rate": 0.001,
+            "eval_runtime": 2.0,
+            "epoch": 1.0,
+        },
+        {
+            "step": 50,
+            "loss": 0.8,
+            "learning_rate": 0.0005,
+            "epoch": 2.0,
+        },
+    ]
 
 
 def test_training_cli_help_does_not_import_gpu_dependencies() -> None:
