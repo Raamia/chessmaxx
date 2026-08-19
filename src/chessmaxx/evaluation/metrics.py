@@ -63,7 +63,7 @@ def _percentile(values: Sequence[float], percentile: float) -> float:
     return ordered[index]
 
 
-def summarize(results: Sequence[PositionResult]) -> dict[str, int | float]:
+def summarize(results: Sequence[PositionResult]) -> dict[str, int | float | None]:
     total = len(results)
     parsed = sum(result.parsed_move is not None for result in results)
     legal = sum(result.is_legal for result in results)
@@ -93,10 +93,22 @@ def summarize(results: Sequence[PositionResult]) -> dict[str, int | float]:
         "legal_move_rate": _rate(legal, total),
         "top1_agreement_rate": _rate(top1, total),
         "topk_agreement_rate": _rate(topk, total),
-        "average_centipawn_regret": statistics.fmean(regrets) if regrets else 0.0,
-        "blunder_100_rate": _rate(sum(value >= 100 for value in regrets), len(regrets)),
-        "blunder_300_rate": _rate(sum(value >= 300 for value in regrets), len(regrets)),
-        "blunder_500_rate": _rate(sum(value >= 500 for value in regrets), len(regrets)),
+        "average_centipawn_regret": statistics.fmean(regrets) if regrets else None,
+        "blunder_100_rate": (
+            _rate(sum(value >= 100 for value in regrets), len(regrets))
+            if regrets
+            else None
+        ),
+        "blunder_300_rate": (
+            _rate(sum(value >= 300 for value in regrets), len(regrets))
+            if regrets
+            else None
+        ),
+        "blunder_500_rate": (
+            _rate(sum(value >= 500 for value in regrets), len(regrets))
+            if regrets
+            else None
+        ),
         "mean_latency_ms": statistics.fmean(latencies) if latencies else 0.0,
         "p50_latency_ms": _percentile(latencies, 0.50),
         "p95_latency_ms": _percentile(latencies, 0.95),

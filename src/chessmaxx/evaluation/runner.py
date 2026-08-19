@@ -32,7 +32,7 @@ class EvaluationReport:
     engine: dict[str, str]
     settings: dict[str, Any]
     telemetry: dict[str, Any]
-    summary: dict[str, int | float]
+    summary: dict[str, int | float | None]
     results: tuple[PositionResult, ...]
 
     def to_dict(self) -> dict[str, Any]:
