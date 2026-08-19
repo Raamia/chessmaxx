@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Protocol, TypeVar
 
 
@@ -140,6 +141,7 @@ class HuggingFaceMoveGenerator:
         max_new_tokens: int = 8,
         revision: str = "main",
         transformers_version: str = "unknown",
+        identity_overrides: dict[str, Any] | None = None,
     ) -> None:
         if max_new_tokens <= 0:
             raise ValueError("max_new_tokens must be positive")
@@ -153,6 +155,7 @@ class HuggingFaceMoveGenerator:
         self.max_new_tokens = max_new_tokens
         self.revision = revision
         self.transformers_version = transformers_version
+        self.identity_overrides = identity_overrides or {}
         self.tokenizer.padding_side = "left"
         if self.tokenizer.pad_token_id is None:
             self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
@@ -202,6 +205,61 @@ class HuggingFaceMoveGenerator:
             transformers.__version__,
         )
 
+    @classmethod
+    def from_adapter(
+        cls,
+        adapter_path: str | Path,
+        *,
+        base_model_name: str,
+        revision: str,
+        device: str | None = None,
+        max_new_tokens: int = 8,
+        dtype: str = "auto",
+    ) -> "HuggingFaceMoveGenerator":
+        """Load a PEFT adapter over an explicitly pinned base model."""
+
+        try:
+            import peft
+            import torch
+            import transformers
+        except ImportError as exc:
+            raise RuntimeError(
+                "adapter evaluation requires `pip install -e '.[train]'`"
+            ) from exc
+
+        selected_device = device
+        if selected_device in (None, "auto"):
+            selected_device = "cuda" if torch.cuda.is_available() else "cpu"
+        if dtype == "auto":
+            selected_dtype: str | Any = "auto"
+        else:
+            selected_dtype = getattr(torch, dtype, None)
+            if selected_dtype is None:
+                raise ValueError(f"unsupported torch dtype: {dtype}")
+
+        adapter = Path(adapter_path).resolve()
+        tokenizer = transformers.AutoTokenizer.from_pretrained(adapter)
+        base_model = transformers.AutoModelForCausalLM.from_pretrained(
+            base_model_name,
+            revision=revision,
+            torch_dtype=selected_dtype,
+        )
+        model = peft.PeftModel.from_pretrained(base_model, adapter).to(selected_device)
+        return cls(
+            model,
+            tokenizer,
+            base_model_name,
+            selected_device,
+            max_new_tokens,
+            revision,
+            transformers.__version__,
+            identity_overrides={
+                "adapter": "peft",
+                "adapter_path": str(adapter),
+                "base_model": base_model_name,
+            },
+        )
+
     @property
     def metadata(self) -> dict[str, Any]:
         identity = collect_model_identity(
@@ -214,6 +272,7 @@ class HuggingFaceMoveGenerator:
         )
         return {
             **identity,
+            **self.identity_overrides,
             "device": self.device,
             "max_new_tokens": self.max_new_tokens,
             "decoding": "greedy",

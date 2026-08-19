@@ -9,6 +9,7 @@ from chessmaxx.training.train import (
     prepare_training_dataset,
     select_training_examples,
 )
+from chessmaxx.training.packing import IsolatedPackedTokenDataset
 
 
 class FakeTokenizer:
@@ -67,6 +68,19 @@ def test_prepare_training_dataset_reports_packing_savings() -> None:
     assert packed_summary.optimizer_records == 1
     assert packed_summary.input_tokens_per_epoch == unpacked_summary.input_tokens_per_epoch
     assert packed_summary.supervised_tokens_per_epoch == 4
+
+
+def test_prepare_training_dataset_selects_isolated_packing():
+    dataset, summary = prepare_training_dataset(
+        [example(1), example(2)],
+        FakeTokenizer(),
+        max_length=256,
+        packing=True,
+        isolate_packed_attention=True,
+    )
+
+    assert isinstance(dataset, IsolatedPackedTokenDataset)
+    assert summary.optimizer_records == 1
 
 
 def test_warmup_arguments_supports_transformers_4_signature() -> None:

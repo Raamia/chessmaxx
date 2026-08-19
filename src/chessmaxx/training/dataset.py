@@ -6,6 +6,7 @@ import json
 from collections.abc import Iterable
 from pathlib import Path
 
+from chessmaxx.evaluation.schema import EvaluationPosition
 from chessmaxx.training.schema import TrainingExample
 
 
@@ -46,3 +47,31 @@ def write_training_examples(
         for example in examples:
             handle.write(json.dumps(example.to_dict(), sort_keys=True) + "\n")
 
+
+def evaluation_positions_for_split(
+    examples: Iterable[TrainingExample], split: str
+) -> list[EvaluationPosition]:
+    """Project one labelled split into the frozen-position evaluation schema."""
+
+    if split not in {"train", "validation", "test"}:
+        raise ValueError("split must be train, validation, or test")
+    positions = [
+        EvaluationPosition(
+            position_id=example.example_id,
+            fen=example.fen,
+            game_id=example.game_id,
+            ply=example.ply,
+            teacher_moves=example.teacher_moves,
+            metadata={
+                "source": example.source,
+                "training_split": example.split,
+                "training_schema_version": example.schema_version,
+                "prompt_version": example.prompt_version,
+            },
+        )
+        for example in examples
+        if example.split == split
+    ]
+    if not positions:
+        raise TrainingDatasetError(f"dataset contains no {split!r} examples")
+    return positions

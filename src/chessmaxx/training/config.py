@@ -18,6 +18,7 @@ class TinySFTProfile:
     max_examples: int = 100
     max_length: int = 256
     packing: bool = True
+    isolate_packed_attention: bool = False
     per_device_batch_size: int = 2
     gradient_accumulation_steps: int = 4
     epochs: float = 20.0
@@ -41,6 +42,8 @@ class TinySFTProfile:
             raise ValueError("method must be lora or full")
         if self.dtype not in {"float16", "bfloat16", "float32"}:
             raise ValueError("dtype must be float16, bfloat16, or float32")
+        if self.isolate_packed_attention and not self.packing:
+            raise ValueError("isolated packed attention requires packing")
         for field_name in (
             "max_examples",
             "max_length",
@@ -78,4 +81,3 @@ def load_tiny_sft_profile(path: str | Path) -> TinySFTProfile:
         return TinySFTProfile.from_dict(section)
     except (KeyError, TypeError, ValueError, tomllib.TOMLDecodeError) as exc:
         raise ValueError(f"invalid tiny-SFT profile {source}: {exc}") from exc
-

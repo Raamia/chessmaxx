@@ -14,6 +14,8 @@ class PackedExample:
     input_ids: tuple[int, ...]
     attention_mask: tuple[int, ...]
     labels: tuple[int, ...]
+    segment_ids: tuple[int, ...]
+    position_ids: tuple[int, ...]
 
 
 def pack_encoded_examples(
@@ -28,6 +30,8 @@ def pack_encoded_examples(
     current_input: list[int] = []
     current_attention: list[int] = []
     current_labels: list[int] = []
+    current_segments: list[int] = []
+    current_positions: list[int] = []
 
     def flush() -> None:
         if not current_ids:
@@ -38,12 +42,16 @@ def pack_encoded_examples(
                 input_ids=tuple(current_input),
                 attention_mask=tuple(current_attention),
                 labels=tuple(current_labels),
+                segment_ids=tuple(current_segments),
+                position_ids=tuple(current_positions),
             )
         )
         current_ids.clear()
         current_input.clear()
         current_attention.clear()
         current_labels.clear()
+        current_segments.clear()
+        current_positions.clear()
 
     for example in examples:
         length = len(example.input_ids)
@@ -53,10 +61,13 @@ def pack_encoded_examples(
             )
         if current_input and len(current_input) + length > max_length:
             flush()
+        segment_id = len(current_ids)
         current_ids.append(example.example_id)
         current_input.extend(example.input_ids)
         current_attention.extend(example.attention_mask)
         current_labels.extend(example.labels)
+        current_segments.extend([segment_id] * length)
+        current_positions.extend(range(length))
     flush()
     return packed
 
@@ -76,6 +87,45 @@ def pad_records(
     return batch
 
 
+def pad_isolated_records(
+    records: list[dict[str, list[int]]], *, pad_token_id: int
+) -> dict[str, list[Any]]:
+    """Pad packed records and construct a boolean block-causal 4D mask."""
+
+    padded = pad_records(records, pad_token_id=pad_token_id)
+    width = len(padded["input_ids"][0])
+    segment_rows: list[list[int]] = []
+    position_rows: list[list[int]] = []
+    masks: list[list[list[list[bool]]]] = []
+    for record in records:
+        length = len(record["input_ids"])
+        segments = record["segment_ids"] + [-1] * (width - length)
+        positions = record["position_ids"] + [0] * (width - length)
+        segment_rows.append(segments)
+        position_rows.append(positions)
+        matrix: list[list[bool]] = []
+        for query in range(width):
+            if query >= length:
+                matrix.append([key == query for key in range(width)])
+                continue
+            matrix.append(
+                [
+                    key <= query
+                    and key < length
+                    and segments[key] == segments[query]
+                    for key in range(width)
+                ]
+            )
+        masks.append([matrix])
+    return {
+        "input_ids": padded["input_ids"],
+        "attention_mask": masks,
+        "labels": padded["labels"],
+        "position_ids": position_rows,
+        "segment_ids": segment_rows,
+    }
+
+
 class PackedTokenDataset:
     def __init__(self, examples: list[PackedExample]) -> None:
         self.items = examples
@@ -92,6 +142,20 @@ class PackedTokenDataset:
         }
 
 
+class IsolatedPackedTokenDataset(PackedTokenDataset):
+    """Packed records retaining boundaries for isolated causal attention."""
+
+    def __getitem__(self, index: int) -> dict[str, list[int]]:
+        item = self.items[index]
+        return {
+            "input_ids": list(item.input_ids),
+            "attention_mask": list(item.attention_mask),
+            "labels": list(item.labels),
+            "segment_ids": list(item.segment_ids),
+            "position_ids": list(item.position_ids),
+        }
+
+
 class CausalLMCollator:
     def __init__(self, pad_token_id: int) -> None:
         self.pad_token_id = pad_token_id
@@ -104,3 +168,23 @@ class CausalLMCollator:
         padded = pad_records(records, pad_token_id=self.pad_token_id)
         return {name: torch.tensor(value, dtype=torch.long) for name, value in padded.items()}
 
+
+class IsolatedCausalLMCollator(CausalLMCollator):
+    """Collate examples with causal attention confined to each packed segment."""
+
+    def __call__(self, records: list[dict[str, list[int]]]) -> dict[str, Any]:
+        try:
+            import torch
+        except ImportError as exc:
+            raise RuntimeError("training requires the optional model dependencies") from exc
+        padded = pad_isolated_records(records, pad_token_id=self.pad_token_id)
+        return {
+            "input_ids": torch.tensor(padded["input_ids"], dtype=torch.long),
+            "attention_mask": torch.tensor(
+                padded["attention_mask"], dtype=torch.bool
+            ),
+            "labels": torch.tensor(padded["labels"], dtype=torch.long),
+            "position_ids": torch.tensor(
+                padded["position_ids"], dtype=torch.long
+            ),
+        }

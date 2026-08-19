@@ -1,3 +1,6 @@
+import sys
+from types import SimpleNamespace
+
 import pytest
 
 from chessmaxx.evaluation.model import (
@@ -31,6 +34,13 @@ class FakeModel:
 
     def parameters(self):
         return [FakeParameter(100, True), FakeParameter(50, False)]
+
+    def to(self, device):
+        self.device = device
+        return self
+
+    def eval(self):
+        self.training = False
 
 
 class FakeTokenizer:
@@ -72,6 +82,62 @@ def test_collects_resolved_model_and_tokenizer_identity():
     assert identity["trainable_parameter_count"] == 100
     assert identity["vocab_size"] == 151_936
     assert identity["dtype"] == "float16"
+
+
+def test_loads_peft_adapter_over_explicit_base_model(monkeypatch, tmp_path):
+    model = FakeModel()
+    tokenizer = FakeTokenizer()
+    tokenizer.padding_side = "right"
+    calls = {}
+
+    class AutoTokenizer:
+        @staticmethod
+        def from_pretrained(path):
+            calls["tokenizer"] = path
+            return tokenizer
+
+    class AutoModel:
+        @staticmethod
+        def from_pretrained(name, **kwargs):
+            calls["base"] = (name, kwargs)
+            return model
+
+    class PeftModel:
+        @staticmethod
+        def from_pretrained(base, path):
+            calls["adapter"] = (base, path)
+            return base
+
+    fake_torch = SimpleNamespace(
+        cuda=SimpleNamespace(is_available=lambda: False),
+        float16="float16",
+        __version__="2.test",
+        version=SimpleNamespace(cuda=None),
+    )
+    fake_transformers = SimpleNamespace(
+        AutoTokenizer=AutoTokenizer,
+        AutoModelForCausalLM=AutoModel,
+        __version__="5.test",
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
+    monkeypatch.setitem(sys.modules, "peft", SimpleNamespace(PeftModel=PeftModel))
+
+    generator = HuggingFaceMoveGenerator.from_adapter(
+        tmp_path / "adapter",
+        base_model_name="Qwen/base",
+        revision="pinned",
+        device="cpu",
+        dtype="float16",
+    )
+
+    assert calls["base"] == (
+        "Qwen/base",
+        {"revision": "pinned", "torch_dtype": "float16"},
+    )
+    assert generator.metadata["adapter"] == "peft"
+    assert generator.metadata["base_model"] == "Qwen/base"
+    assert generator.metadata["adapter_path"] == str((tmp_path / "adapter").resolve())
 
 
 def test_adaptive_batching_bisects_memory_failures_and_preserves_order():

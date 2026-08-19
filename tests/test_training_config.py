@@ -1,4 +1,4 @@
-from dataclasses import asdict
+from dataclasses import asdict, replace
 
 import pytest
 
@@ -37,6 +37,31 @@ def test_unpacked_control_only_changes_name_and_packing():
     }
 
 
+def test_isolated_profile_only_enables_attention_isolation():
+    naive = asdict(
+        load_tiny_sft_profile("configs/train/tiny-sft-qwen3-0.6b.toml")
+    )
+    isolated = asdict(
+        load_tiny_sft_profile(
+            "configs/train/tiny-sft-qwen3-0.6b-isolated.toml"
+        )
+    )
+
+    differences = {
+        key: (naive[key], isolated[key])
+        for key in naive
+        if naive[key] != isolated[key]
+    }
+
+    assert differences == {
+        "name": (
+            "tiny-sft-qwen3-0.6b",
+            "tiny-sft-qwen3-0.6b-isolated",
+        ),
+        "isolate_packed_attention": (False, True),
+    }
+
+
 def test_rejects_unknown_training_setting():
     with pytest.raises(ValueError, match="unknown tiny-SFT setting"):
         TinySFTProfile.from_dict(
@@ -55,3 +80,12 @@ def test_rejects_unknown_training_setting():
 def test_rejects_unsafe_training_values(values):
     with pytest.raises(ValueError):
         TinySFTProfile.from_dict(values)
+
+
+def test_isolated_attention_requires_packing():
+    profile = load_tiny_sft_profile(
+        "configs/train/tiny-sft-qwen3-0.6b-unpacked.toml"
+    )
+
+    with pytest.raises(ValueError, match="requires packing"):
+        replace(profile, isolate_packed_attention=True)

@@ -16,6 +16,8 @@ from chessmaxx.training.config import TinySFTProfile
 from chessmaxx.training.dataset import load_training_examples
 from chessmaxx.training.packing import (
     CausalLMCollator,
+    IsolatedCausalLMCollator,
+    IsolatedPackedTokenDataset,
     PackedTokenDataset,
     pack_encoded_examples,
 )
@@ -49,13 +51,19 @@ def prepare_training_dataset(
     *,
     max_length: int,
     packing: bool,
+    isolate_packed_attention: bool = False,
 ) -> tuple[Any, TrainingDataSummary]:
+    if isolate_packed_attention and not packing:
+        raise ValueError("isolated packed attention requires packing")
     selected = SupervisedTokenDataset(examples, tokenizer, max_length=max_length)
     input_tokens = sum(len(item.input_ids) for item in selected.items)
     supervised_tokens = sum(item.supervised_tokens for item in selected.items)
     if packing:
-        records = PackedTokenDataset(
-            pack_encoded_examples(selected.items, max_length=max_length)
+        packed = pack_encoded_examples(selected.items, max_length=max_length)
+        records = (
+            IsolatedPackedTokenDataset(packed)
+            if isolate_packed_attention
+            else PackedTokenDataset(packed)
         )
     else:
         records = selected
@@ -151,10 +159,14 @@ def run_tiny_sft(
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"
 
+    model_options: dict[str, Any] = {}
+    if profile.isolate_packed_attention:
+        model_options["attn_implementation"] = "sdpa"
     model = transformers.AutoModelForCausalLM.from_pretrained(
         profile.model_id,
         revision=profile.revision,
         dtype=_dtype(torch, profile.dtype),
+        **model_options,
     )
     resolved_model_revision = getattr(model.config, "_commit_hash", None)
     model.config.use_cache = False
@@ -179,6 +191,7 @@ def run_tiny_sft(
         tokenizer,
         max_length=profile.max_length,
         packing=profile.packing,
+        isolate_packed_attention=profile.isolate_packed_attention,
     )
     data_summary = TrainingDataSummary(
         available_train_examples=available_train,
@@ -216,11 +229,16 @@ def run_tiny_sft(
         optim="adamw_torch",
         include_num_input_tokens_seen=True,
     )
+    collator = (
+        IsolatedCausalLMCollator(tokenizer.pad_token_id)
+        if profile.isolate_packed_attention
+        else CausalLMCollator(tokenizer.pad_token_id)
+    )
     trainer = transformers.Trainer(
         model=model,
         args=arguments,
         train_dataset=dataset,
-        data_collator=CausalLMCollator(tokenizer.pad_token_id),
+        data_collator=collator,
         processing_class=tokenizer,
     )
 
