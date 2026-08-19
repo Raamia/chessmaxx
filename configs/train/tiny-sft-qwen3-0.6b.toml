@@ -1,7 +1,7 @@
 [tiny_sft]
 name = "tiny-sft-qwen3-0.6b"
 model_id = "Qwen/Qwen3-0.6B-Base"
-revision = "main"
+revision = "da87bfb608c14b7cf20ba1ce41287e8de496c0cd"
 method = "lora"
 dtype = "bfloat16"
 max_examples = 100

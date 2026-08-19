@@ -7,6 +7,7 @@ def test_loads_checked_in_tiny_sft_profile():
     profile = load_tiny_sft_profile("configs/train/tiny-sft-qwen3-0.6b.toml")
 
     assert profile.model_id == "Qwen/Qwen3-0.6B-Base"
+    assert profile.revision == "da87bfb608c14b7cf20ba1ce41287e8de496c0cd"
     assert profile.method == "lora"
     assert profile.max_examples == 100
     assert profile.packing is True
