@@ -1,0 +1,12 @@
+[baseline]
+name = "qwen3-0.6b-base"
+model_id = "Qwen/Qwen3-0.6B-Base"
+revision = "main"
+device = "auto"
+dtype = "auto"
+batch_size = 8
+max_new_tokens = 8
+stockfish_nodes = 50000
+stockfish_multipv = 3
+stockfish_threads = 1
+stockfish_hash_mb = 64

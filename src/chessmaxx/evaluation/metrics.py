@@ -31,6 +31,25 @@ class PositionResult:
         value["teacher_moves"] = list(self.teacher_moves)
         return value
 
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "PositionResult":
+        return cls(
+            position_id=str(value["position_id"]),
+            fen=str(value["fen"]),
+            raw_output=str(value["raw_output"]),
+            candidate=value.get("candidate"),
+            parsed_move=value.get("parsed_move"),
+            is_legal=bool(value["is_legal"]),
+            error=value.get("error"),
+            teacher_moves=tuple(value["teacher_moves"]),
+            best_score_cp=int(value["best_score_cp"]),
+            model_score_cp=value.get("model_score_cp"),
+            centipawn_regret=value.get("centipawn_regret"),
+            latency_ms=float(value["latency_ms"]),
+            prompt_tokens=value.get("prompt_tokens"),
+            output_tokens=value.get("output_tokens"),
+        )
+
 
 def _rate(count: int, total: int) -> float:
     return count / total if total else 0.0
@@ -82,4 +101,3 @@ def summarize(results: Sequence[PositionResult]) -> dict[str, int | float]:
         "p50_latency_ms": _percentile(latencies, 0.50),
         "p95_latency_ms": _percentile(latencies, 0.95),
     }
-

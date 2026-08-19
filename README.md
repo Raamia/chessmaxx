@@ -86,6 +86,51 @@ chessmaxx-eval positions \
 
 Use `--limit N` for a quick partial run. Model generation is greedy, and Stockfish defaults to one thread to make comparisons as stable as possible.
 
+## Model baseline
+
+Phase 2 records the unmodified model's chess ability before any training. Qwen3-0.6B Base is the primary baseline, Qwen3-0.6B measures the effect of general post-training, and SmolLM2-360M is a smaller-vocabulary control. Their complete settings live in `configs/baseline/`.
+
+First, freeze an evaluation set from PGN games:
+
+```bash
+chessmaxx-eval sample-pgn \
+  --pgn data/raw/games.pgn \
+  --output data/eval/baseline-v1.jsonl \
+  --count 1000 \
+  --seed 2026 \
+  --minimum-ply 8 \
+  --max-per-game 4
+```
+
+Sampling is deterministic, capped per source game, and balanced across opening, middlegame, and endgame positions when enough positions are available.
+
+Then run the primary baseline:
+
+```bash
+chessmaxx-eval baseline \
+  --profile configs/baseline/qwen3-0.6b-base.toml \
+  --dataset data/eval/baseline-v1.jsonl \
+  --stockfish /path/to/stockfish \
+  --cache artifacts/stockfish-cache.json \
+  --output artifacts/evals/qwen3-0.6b-base.json
+```
+
+The run creates both the final report and an append-only `.progress.jsonl` journal beside it. If the process is interrupted, rerunning the identical command restores completed positions. A journal is accepted only when its dataset, model revision, engine identity, profile, and runtime settings match the new run.
+
+Each report records:
+
+- Requested and resolved model revision
+- Architecture, tokenizer, parameter count, vocabulary size, and dtype
+- PyTorch, Transformers, Python, CUDA, Chessmaxx, and Git versions
+- Dataset and profile SHA-256 fingerprints
+- Stockfish identity and search settings
+- Attempted batch sizes and out-of-memory retries
+- Peak allocated and reserved VRAM
+- Position and token throughput
+- Every raw model output and position-level chess result
+
+If a batch exceeds available VRAM, the evaluator clears cached CUDA memory and bisects it automatically. The attempted batch and retry count remain in telemetry, so this fallback is visible in the report.
+
 ### Position format
 
 Evaluation sets use one JSON object per line:

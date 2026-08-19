@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
+build/
 .pytest_cache/
 .venv/
 venv/
@@ -12,4 +13,3 @@ data/raw/
 data/processed/
 *.pt
 *.safetensors
-
