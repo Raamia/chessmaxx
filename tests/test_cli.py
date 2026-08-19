@@ -273,3 +273,24 @@ def test_sample_pgn_cli_writes_frozen_dataset(tmp_path):
         == 0
     )
     assert len(cli.load_positions(output)) == 2
+
+
+def test_discovers_adapter_checkpoints_in_step_order(tmp_path):
+    run_dir = tmp_path / "run"
+    for relative in (
+        "checkpoints/checkpoint-100",
+        "checkpoints/checkpoint-25",
+        "checkpoints/not-a-checkpoint",
+        "final",
+    ):
+        directory = run_dir / relative
+        directory.mkdir(parents=True)
+        (directory / "adapter_config.json").write_text("{}", encoding="utf-8")
+
+    discovered = cli.discover_adapter_checkpoints(run_dir)
+
+    assert [(label, step) for label, _, step in discovered] == [
+        ("checkpoint-25", 25),
+        ("checkpoint-100", 100),
+        ("final", None),
+    ]

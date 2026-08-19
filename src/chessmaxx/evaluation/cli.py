@@ -71,6 +71,31 @@ def _tree_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def discover_adapter_checkpoints(
+    run_dir: str | Path, *, include_final: bool = True
+) -> list[tuple[str, Path, int | None]]:
+    """Return numeric Trainer checkpoints followed by the final adapter."""
+
+    root = Path(run_dir).resolve()
+    checkpoints_root = root / "checkpoints"
+    discovered: list[tuple[str, Path, int | None]] = []
+    if checkpoints_root.is_dir():
+        for path in checkpoints_root.glob("checkpoint-*"):
+            try:
+                step = int(path.name.removeprefix("checkpoint-"))
+            except ValueError:
+                continue
+            if path.is_dir() and (path / "adapter_config.json").is_file():
+                discovered.append((path.name, path, step))
+    discovered.sort(key=lambda item: item[2] or 0)
+    final = root / "final"
+    if include_final and final.is_dir() and (final / "adapter_config.json").is_file():
+        discovered.append(("final", final, None))
+    if not discovered:
+        raise ValueError(f"no PEFT adapter checkpoints found below {root}")
+    return discovered
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="chessmaxx-eval")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -164,6 +189,32 @@ def build_parser() -> argparse.ArgumentParser:
     labelled_base.add_argument("--threads", type=_positive_int, default=1)
     labelled_base.add_argument("--hash-mb", type=_positive_int, default=64)
     labelled_base.add_argument(
+        "--limit", type=_positive_int, help="evaluate only the first N positions"
+    )
+
+    checkpoints = subparsers.add_parser(
+        "checkpoints", help="evaluate every saved adapter checkpoint on one split"
+    )
+    checkpoints.add_argument("--training-profile", type=Path, required=True)
+    checkpoints.add_argument("--run-dir", type=Path, required=True)
+    checkpoints.add_argument("--dataset", type=Path, required=True)
+    checkpoints.add_argument(
+        "--split", choices=("train", "validation", "test"), default="validation"
+    )
+    checkpoints.add_argument("--output-dir", type=Path, required=True)
+    checkpoints.add_argument("--stockfish", default="stockfish")
+    checkpoints.add_argument(
+        "--cache", type=Path, default=Path("artifacts/cache.json")
+    )
+    checkpoints.add_argument("--device")
+    checkpoints.add_argument("--batch-size", type=_positive_int, default=8)
+    checkpoints.add_argument("--max-new-tokens", type=_positive_int, default=8)
+    checkpoints.add_argument("--nodes", type=_positive_int, default=50_000)
+    checkpoints.add_argument("--multipv", type=_positive_int, default=3)
+    checkpoints.add_argument("--threads", type=_positive_int, default=1)
+    checkpoints.add_argument("--hash-mb", type=_positive_int, default=64)
+    checkpoints.add_argument("--exclude-final", action="store_true")
+    checkpoints.add_argument(
         "--limit", type=_positive_int, help="evaluate only the first N positions"
     )
 
@@ -311,6 +362,8 @@ def run_adapter(args: argparse.Namespace) -> int:
         "position_limit": args.limit,
         "stockfish": asdict(engine_config),
         "mode": "adapter",
+        "checkpoint_label": getattr(args, "checkpoint_label", None),
+        "checkpoint_step": getattr(args, "checkpoint_step", None),
     }
     with StockfishAnalyzer.open(
         args.stockfish, config=engine_config, cache_path=args.cache
@@ -382,6 +435,46 @@ def run_labelled_base(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_checkpoints(args: argparse.Namespace) -> int:
+    results = []
+    for label, adapter_path, step in discover_adapter_checkpoints(
+        args.run_dir, include_final=not args.exclude_final
+    ):
+        output = args.output_dir / f"{label}.json"
+        adapter_args = argparse.Namespace(
+            training_profile=args.training_profile,
+            adapter_dir=adapter_path,
+            dataset=args.dataset,
+            split=args.split,
+            output=output,
+            stockfish=args.stockfish,
+            cache=args.cache,
+            journal=None,
+            device=args.device,
+            batch_size=args.batch_size,
+            max_new_tokens=args.max_new_tokens,
+            nodes=args.nodes,
+            multipv=args.multipv,
+            threads=args.threads,
+            hash_mb=args.hash_mb,
+            limit=args.limit,
+            checkpoint_label=label,
+            checkpoint_step=step,
+        )
+        run_adapter(adapter_args)
+        report = json.loads(output.read_text(encoding="utf-8"))
+        results.append(
+            {
+                "label": label,
+                "step": step,
+                "output": str(output),
+                "summary": report["summary"],
+            }
+        )
+    print(json.dumps(results, indent=2, sort_keys=True))
+    return 0
+
+
 def run_sample_pgn(args: argparse.Namespace) -> int:
     positions = sample_pgn_positions(
         args.pgn,
@@ -412,6 +505,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return run_adapter(args)
     if args.command == "labelled-base":
         return run_labelled_base(args)
+    if args.command == "checkpoints":
+        return run_checkpoints(args)
     if args.command == "sample-pgn":
         return run_sample_pgn(args)
     raise AssertionError(f"unhandled command: {args.command}")
