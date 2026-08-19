@@ -11,6 +11,8 @@ from chessmaxx.training.distillation import (  # noqa: E402
 )
 from chessmaxx.training.config import TinySFTProfile  # noqa: E402
 from chessmaxx.training.train import _policy_trainer_class  # noqa: E402
+from chessmaxx.evaluation.model import HuggingFaceLegalMoveRanker  # noqa: E402
+import chess  # noqa: E402
 
 
 def test_candidate_scores_sum_only_supervised_next_tokens():
@@ -94,3 +96,58 @@ def test_policy_trainer_backpropagates_through_candidate_logits():
     assert torch.isfinite(loss)
     assert logits.grad is not None
     assert torch.isfinite(logits.grad).all()
+
+
+def test_legal_move_ranker_selects_highest_likelihood_sequence():
+    class Tokenizer:
+        bos_token_id = 1
+        eos_token_id = 3
+        pad_token_id = 0
+        padding_side = "right"
+
+        def __init__(self):
+            self.move_tokens = {}
+
+        def encode(self, text, *, add_special_tokens):
+            if text.startswith(" "):
+                return [self.move_tokens.setdefault(text.strip(), 10 + len(self.move_tokens))]
+            return [1, 2]
+
+        def __len__(self):
+            return 64
+
+    class Model:
+        config = SimpleNamespace(
+            _commit_hash="revision",
+            vocab_size=64,
+            hidden_size=8,
+            num_hidden_layers=1,
+        )
+        dtype = torch.float32
+
+        def eval(self):
+            return self
+
+        def parameters(self):
+            return []
+
+        def __call__(self, *, input_ids, attention_mask, use_cache):
+            del attention_mask, use_cache
+            logits = torch.zeros((*input_ids.shape, 64))
+            for row in range(input_ids.shape[0]):
+                move_token = int(input_ids[row, 2])
+                logits[row, 1, move_token] = (move_token - 10) / 10
+                logits[row, 2, 3] = 20.0
+            return SimpleNamespace(logits=logits)
+
+    tokenizer = Tokenizer()
+    ranker = HuggingFaceLegalMoveRanker(
+        Model(), tokenizer, "fake", "cpu", candidate_batch_size=4
+    )
+
+    result = ranker.generate_many([chess.STARTING_FEN])[0]
+
+    assert result.raw_output == sorted(
+        move.uci() for move in chess.Board().legal_moves
+    )[-1]
+    assert ranker.telemetry["candidate_sequences_scored"] == 20

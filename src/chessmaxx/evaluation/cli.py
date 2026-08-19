@@ -17,7 +17,10 @@ from chessmaxx.evaluation.config import load_baseline_profile
 from chessmaxx.evaluation.curve import build_checkpoint_curve
 from chessmaxx.evaluation.dataset import load_positions
 from chessmaxx.evaluation.dataset import write_positions
-from chessmaxx.evaluation.model import HuggingFaceMoveGenerator
+from chessmaxx.evaluation.model import (
+    HuggingFaceLegalMoveRanker,
+    HuggingFaceMoveGenerator,
+)
 from chessmaxx.evaluation.runner import EvaluationRunner
 from chessmaxx.evaluation.sampling import sample_pgn_positions
 from chessmaxx.evaluation.stockfish import StockfishAnalyzer, StockfishConfig
@@ -160,6 +163,10 @@ def build_parser() -> argparse.ArgumentParser:
     adapter.add_argument("--device")
     adapter.add_argument("--batch-size", type=_positive_int, default=8)
     adapter.add_argument("--max-new-tokens", type=_positive_int, default=8)
+    adapter.add_argument(
+        "--selection", choices=("greedy", "legal-rerank"), default="greedy"
+    )
+    adapter.add_argument("--candidate-batch-size", type=_positive_int, default=16)
     adapter.add_argument("--nodes", type=_positive_int, default=50_000)
     adapter.add_argument("--multipv", type=_positive_int, default=3)
     adapter.add_argument("--threads", type=_positive_int, default=1)
@@ -210,6 +217,10 @@ def build_parser() -> argparse.ArgumentParser:
     checkpoints.add_argument("--device")
     checkpoints.add_argument("--batch-size", type=_positive_int, default=8)
     checkpoints.add_argument("--max-new-tokens", type=_positive_int, default=8)
+    checkpoints.add_argument(
+        "--selection", choices=("greedy", "legal-rerank"), default="greedy"
+    )
+    checkpoints.add_argument("--candidate-batch-size", type=_positive_int, default=16)
     checkpoints.add_argument("--nodes", type=_positive_int, default=50_000)
     checkpoints.add_argument("--multipv", type=_positive_int, default=3)
     checkpoints.add_argument("--threads", type=_positive_int, default=1)
@@ -342,14 +353,25 @@ def run_adapter(args: argparse.Namespace) -> int:
     )
     if args.limit is not None:
         positions = positions[: args.limit]
-    model = HuggingFaceMoveGenerator.from_adapter(
-        args.adapter_dir,
-        base_model_name=profile.model_id,
-        revision=profile.revision,
-        device=args.device,
-        max_new_tokens=args.max_new_tokens,
-        dtype=profile.dtype,
-    )
+    selection = getattr(args, "selection", "greedy")
+    if selection == "legal-rerank":
+        model = HuggingFaceLegalMoveRanker.from_adapter(
+            args.adapter_dir,
+            base_model_name=profile.model_id,
+            revision=profile.revision,
+            device=args.device,
+            dtype=profile.dtype,
+            candidate_batch_size=getattr(args, "candidate_batch_size", 16),
+        )
+    else:
+        model = HuggingFaceMoveGenerator.from_adapter(
+            args.adapter_dir,
+            base_model_name=profile.model_id,
+            revision=profile.revision,
+            device=args.device,
+            max_new_tokens=args.max_new_tokens,
+            dtype=profile.dtype,
+        )
     engine_config = StockfishConfig(
         nodes=args.nodes,
         multipv=args.multipv,
@@ -371,6 +393,7 @@ def run_adapter(args: argparse.Namespace) -> int:
         "position_limit": args.limit,
         "stockfish": asdict(engine_config),
         "mode": "adapter",
+        "selection": selection,
         "checkpoint_label": getattr(args, "checkpoint_label", None),
         "checkpoint_step": getattr(args, "checkpoint_step", None),
     }
@@ -462,6 +485,8 @@ def run_checkpoints(args: argparse.Namespace) -> int:
             device=args.device,
             batch_size=args.batch_size,
             max_new_tokens=args.max_new_tokens,
+            selection=args.selection,
+            candidate_batch_size=args.candidate_batch_size,
             nodes=args.nodes,
             multipv=args.multipv,
             threads=args.threads,
