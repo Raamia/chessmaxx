@@ -4,6 +4,7 @@ import pytest
 from chessmaxx.evaluation.schema import TeacherMove
 from chessmaxx.training.dataset import (
     TrainingDatasetError,
+    evaluation_positions_for_split,
     load_training_examples,
     write_training_examples,
 )
@@ -48,3 +49,21 @@ def test_loader_rejects_duplicate_ids(tmp_path):
 
     with pytest.raises(TrainingDatasetError, match="duplicate example_id"):
         load_training_examples(path)
+
+
+def test_projects_one_training_split_into_evaluation_positions():
+    train = example(example_id="train-1")
+    validation = example(example_id="validation-1", split="validation")
+
+    positions = evaluation_positions_for_split([train, validation], "validation")
+
+    assert len(positions) == 1
+    assert positions[0].position_id == "validation-1"
+    assert positions[0].teacher_moves == validation.teacher_moves
+    assert positions[0].metadata["training_split"] == "validation"
+    assert positions[0].metadata["prompt_version"] == validation.prompt_version
+
+
+def test_split_projection_rejects_missing_split():
+    with pytest.raises(TrainingDatasetError, match="no 'test' examples"):
+        evaluation_positions_for_split([example()], "test")
