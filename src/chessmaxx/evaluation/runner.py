@@ -29,6 +29,7 @@ class EvaluationReport:
     model: dict[str, Any]
     engine: dict[str, str]
     settings: dict[str, Any]
+    telemetry: dict[str, Any]
     summary: dict[str, int | float]
     results: tuple[PositionResult, ...]
 
@@ -38,6 +39,7 @@ class EvaluationReport:
             "model": self.model,
             "engine": self.engine,
             "settings": self.settings,
+            "telemetry": self.telemetry,
             "summary": self.summary,
             "results": [result.to_dict() for result in self.results],
         }
@@ -67,6 +69,9 @@ class EvaluationRunner:
         self.settings = settings or {}
 
     def run(self, positions: Sequence[EvaluationPosition]) -> EvaluationReport:
+        reset_telemetry = getattr(self.generator, "reset_telemetry", None)
+        if reset_telemetry is not None:
+            reset_telemetry()
         results: list[PositionResult] = []
         for start in range(0, len(positions), self.batch_size):
             batch = positions[start : start + self.batch_size]
@@ -116,6 +121,7 @@ class EvaluationRunner:
             model=dict(self.generator.metadata),
             engine=dict(self.analyzer.engine_id),
             settings={**self.settings, "batch_size": self.batch_size},
+            telemetry=dict(getattr(self.generator, "telemetry", {})),
             summary=summarize(results),
             results=tuple(results),
         )

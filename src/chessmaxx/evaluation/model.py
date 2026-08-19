@@ -71,6 +71,11 @@ class MoveGenerator(Protocol):
     @property
     def metadata(self) -> dict[str, Any]: ...
 
+    @property
+    def telemetry(self) -> dict[str, Any]: ...
+
+    def reset_telemetry(self) -> None: ...
+
     def generate_many(self, fens: list[str]) -> list[GeneratedMove]: ...
 
 
@@ -152,6 +157,7 @@ class HuggingFaceMoveGenerator:
         if self.tokenizer.pad_token_id is None:
             self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
         self.model.eval()
+        self.reset_telemetry()
 
     @classmethod
     def from_pretrained(
@@ -213,6 +219,58 @@ class HuggingFaceMoveGenerator:
             "decoding": "greedy",
         }
 
+    def reset_telemetry(self) -> None:
+        self._generation_seconds = 0.0
+        self._positions_generated = 0
+        self._prompt_tokens = 0
+        self._output_tokens = 0
+        self._batch_attempts: list[int] = []
+        self._successful_batch_sizes: list[int] = []
+        self._oom_retries = 0
+        if self.device.startswith("cuda"):
+            self._torch.cuda.reset_peak_memory_stats(self.device)
+
+    @property
+    def telemetry(self) -> dict[str, Any]:
+        seconds = self._generation_seconds
+        total_tokens = self._prompt_tokens + self._output_tokens
+        value: dict[str, Any] = {
+            "generation_seconds": seconds,
+            "positions_generated": self._positions_generated,
+            "prompt_tokens": self._prompt_tokens,
+            "output_tokens": self._output_tokens,
+            "total_tokens": total_tokens,
+            "positions_per_second": self._positions_generated / seconds if seconds else 0.0,
+            "tokens_per_second": total_tokens / seconds if seconds else 0.0,
+            "output_tokens_per_second": self._output_tokens / seconds if seconds else 0.0,
+            "batch_attempts": list(self._batch_attempts),
+            "successful_batch_sizes": list(self._successful_batch_sizes),
+            "oom_retries": self._oom_retries,
+            "peak_allocated_vram_bytes": None,
+            "peak_reserved_vram_bytes": None,
+            "total_vram_bytes": None,
+            "device_name": "CPU",
+            "device_capability": None,
+            "cuda_version": self._torch.version.cuda,
+        }
+        if self.device.startswith("cuda"):
+            properties = self._torch.cuda.get_device_properties(self.device)
+            capability = self._torch.cuda.get_device_capability(self.device)
+            value.update(
+                {
+                    "peak_allocated_vram_bytes": self._torch.cuda.max_memory_allocated(
+                        self.device
+                    ),
+                    "peak_reserved_vram_bytes": self._torch.cuda.max_memory_reserved(
+                        self.device
+                    ),
+                    "total_vram_bytes": properties.total_memory,
+                    "device_name": properties.name,
+                    "device_capability": f"{capability[0]}.{capability[1]}",
+                }
+            )
+        return value
+
     def generate_many(self, fens: list[str]) -> list[GeneratedMove]:
         return adaptive_batch_call(
             fens,
@@ -222,26 +280,33 @@ class HuggingFaceMoveGenerator:
         )
 
     def _generate_batch(self, fens: list[str]) -> list[GeneratedMove]:
-        prompts = [build_prompt(fen) for fen in fens]
-        inputs = self.tokenizer(
-            prompts,
-            return_tensors="pt",
-            padding=True,
-            add_special_tokens=True,
-        ).to(self.device)
-        input_width = inputs["input_ids"].shape[1]
-
-        self._synchronize()
+        self._batch_attempts.append(len(fens))
         started = time.perf_counter()
-        with self._torch.inference_mode():
-            generated = self.model.generate(
-                **inputs,
-                do_sample=False,
-                max_new_tokens=self.max_new_tokens,
-                pad_token_id=self.tokenizer.pad_token_id,
-            )
-        self._synchronize()
-        latency_per_position = (time.perf_counter() - started) * 1000 / len(fens)
+        try:
+            prompts = [build_prompt(fen) for fen in fens]
+            inputs = self.tokenizer(
+                prompts,
+                return_tensors="pt",
+                padding=True,
+                add_special_tokens=True,
+            ).to(self.device)
+            input_width = inputs["input_ids"].shape[1]
+
+            self._synchronize()
+            with self._torch.inference_mode():
+                generated = self.model.generate(
+                    **inputs,
+                    do_sample=False,
+                    max_new_tokens=self.max_new_tokens,
+                    pad_token_id=self.tokenizer.pad_token_id,
+                )
+            self._synchronize()
+        except Exception:
+            self._generation_seconds += time.perf_counter() - started
+            raise
+        elapsed = time.perf_counter() - started
+        self._generation_seconds += elapsed
+        latency_per_position = elapsed * 1000 / len(fens)
 
         responses: list[GeneratedMove] = []
         prompt_lengths = inputs["attention_mask"].sum(dim=1).tolist()
@@ -261,6 +326,10 @@ class HuggingFaceMoveGenerator:
                     output_tokens=output_tokens,
                 )
             )
+        self._positions_generated += len(responses)
+        self._prompt_tokens += sum(response.prompt_tokens or 0 for response in responses)
+        self._output_tokens += sum(response.output_tokens or 0 for response in responses)
+        self._successful_batch_sizes.append(len(responses))
         return responses
 
     def _synchronize(self) -> None:
@@ -274,5 +343,6 @@ class HuggingFaceMoveGenerator:
         return isinstance(error, RuntimeError) and "out of memory" in str(error).lower()
 
     def _recover_memory(self) -> None:
+        self._oom_retries += 1
         if self.device.startswith("cuda"):
             self._torch.cuda.empty_cache()
