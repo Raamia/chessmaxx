@@ -14,6 +14,7 @@ from typing import Sequence
 
 from chessmaxx import __version__
 from chessmaxx.evaluation.config import load_baseline_profile
+from chessmaxx.evaluation.curve import build_checkpoint_curve
 from chessmaxx.evaluation.dataset import load_positions
 from chessmaxx.evaluation.dataset import write_positions
 from chessmaxx.evaluation.model import HuggingFaceMoveGenerator
@@ -217,6 +218,14 @@ def build_parser() -> argparse.ArgumentParser:
     checkpoints.add_argument(
         "--limit", type=_positive_int, help="evaluate only the first N positions"
     )
+
+    curve = subparsers.add_parser(
+        "curve", help="join base, training, and checkpoint reports"
+    )
+    curve.add_argument("--base-report", type=Path, required=True)
+    curve.add_argument("--training-report", type=Path, required=True)
+    curve.add_argument("--checkpoint-reports", type=Path, required=True)
+    curve.add_argument("--output", type=Path, required=True)
 
     sample = subparsers.add_parser(
         "sample-pgn", help="create a deterministic frozen position set from PGN"
@@ -475,6 +484,25 @@ def run_checkpoints(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_curve(args: argparse.Namespace) -> int:
+    base = json.loads(args.base_report.read_text(encoding="utf-8"))
+    training = json.loads(args.training_report.read_text(encoding="utf-8"))
+    checkpoints = []
+    for path in sorted(args.checkpoint_reports.glob("*.json")):
+        report = json.loads(path.read_text(encoding="utf-8"))
+        if report.get("settings", {}).get("mode") == "adapter":
+            checkpoints.append(report)
+    if not checkpoints:
+        raise ValueError("checkpoint report directory contains no adapter reports")
+    curve = build_checkpoint_curve(base, training, checkpoints)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(
+        json.dumps(curve, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    print(json.dumps(curve["points"], indent=2, sort_keys=True))
+    return 0
+
+
 def run_sample_pgn(args: argparse.Namespace) -> int:
     positions = sample_pgn_positions(
         args.pgn,
@@ -507,6 +535,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return run_labelled_base(args)
     if args.command == "checkpoints":
         return run_checkpoints(args)
+    if args.command == "curve":
+        return run_curve(args)
     if args.command == "sample-pgn":
         return run_sample_pgn(args)
     raise AssertionError(f"unhandled command: {args.command}")

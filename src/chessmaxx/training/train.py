@@ -302,7 +302,7 @@ def run_tiny_sft(
         logging_steps=profile.logging_steps,
         save_strategy="steps",
         save_steps=profile.save_steps,
-        save_total_limit=2,
+        save_total_limit=profile.save_total_limit,
         report_to="none",
         remove_unused_columns=False,
         seed=profile.seed,

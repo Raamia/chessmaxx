@@ -73,6 +73,7 @@ def test_scaled_profile_enables_held_out_training_evaluation():
     assert profile.packing is True
     assert profile.isolate_packed_attention is True
     assert profile.evaluation_steps == 25
+    assert profile.save_total_limit == 20
 
 
 def test_rejects_unknown_training_setting():

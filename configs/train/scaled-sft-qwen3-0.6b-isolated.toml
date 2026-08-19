@@ -20,6 +20,7 @@ gradient_checkpointing = true
 logging_steps = 5
 evaluation_steps = 25
 save_steps = 25
+save_total_limit = 20
 seed = 2026
 lora_rank = 16
 lora_alpha = 32

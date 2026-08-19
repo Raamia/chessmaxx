@@ -31,6 +31,7 @@ class TinySFTProfile:
     logging_steps: int = 1
     evaluation_steps: int = 25
     save_steps: int = 25
+    save_total_limit: int = 2
     seed: int = 2026
     lora_rank: int = 16
     lora_alpha: int = 32
@@ -54,6 +55,7 @@ class TinySFTProfile:
             "logging_steps",
             "evaluation_steps",
             "save_steps",
+            "save_total_limit",
             "lora_rank",
             "lora_alpha",
         ):
