@@ -4,7 +4,11 @@ import chess
 
 from chessmaxx.evaluation.schema import TeacherMove
 from chessmaxx.training.schema import TrainingExample
-from chessmaxx.training.train import prepare_training_dataset, select_training_examples
+from chessmaxx.training.train import (
+    _warmup_arguments,
+    prepare_training_dataset,
+    select_training_examples,
+)
 
 
 class FakeTokenizer:
@@ -63,6 +67,32 @@ def test_prepare_training_dataset_reports_packing_savings() -> None:
     assert packed_summary.optimizer_records == 1
     assert packed_summary.input_tokens_per_epoch == unpacked_summary.input_tokens_per_epoch
     assert packed_summary.supervised_tokens_per_epoch == 4
+
+
+def test_warmup_arguments_supports_transformers_4_signature() -> None:
+    def training_arguments(*, warmup_ratio: float = 0.0) -> None:
+        pass
+
+    assert _warmup_arguments(training_arguments, 0.05) == {"warmup_ratio": 0.05}
+
+
+def test_warmup_arguments_supports_transformers_5_signature() -> None:
+    def training_arguments(*, warmup_steps: int | float = 0) -> None:
+        pass
+
+    assert _warmup_arguments(training_arguments, 0.05) == {"warmup_steps": 0.05}
+
+
+def test_warmup_arguments_rejects_unknown_signature() -> None:
+    def training_arguments(*, learning_rate: float = 0.001) -> None:
+        pass
+
+    try:
+        _warmup_arguments(training_arguments, 0.05)
+    except RuntimeError as exc:
+        assert "neither warmup_ratio nor warmup_steps" in str(exc)
+    else:
+        raise AssertionError("expected unsupported warmup arguments to fail")
 
 
 def test_training_cli_help_does_not_import_gpu_dependencies() -> None:

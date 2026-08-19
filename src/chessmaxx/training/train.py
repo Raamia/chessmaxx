@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import platform
 import subprocess
@@ -95,6 +96,19 @@ def _dtype(torch: Any, name: str) -> Any:
     }[name]
 
 
+def _warmup_arguments(
+    training_arguments: Any, warmup_ratio: float
+) -> dict[str, float]:
+    parameters = inspect.signature(training_arguments).parameters
+    if "warmup_ratio" in parameters:
+        return {"warmup_ratio": warmup_ratio}
+    if "warmup_steps" in parameters:
+        return {"warmup_steps": warmup_ratio}
+    raise RuntimeError(
+        "TrainingArguments accepts neither warmup_ratio nor warmup_steps"
+    )
+
+
 def run_tiny_sft(
     profile: TinySFTProfile,
     *,
@@ -183,7 +197,9 @@ def run_tiny_sft(
         num_train_epochs=profile.epochs,
         learning_rate=profile.learning_rate,
         weight_decay=profile.weight_decay,
-        warmup_ratio=profile.warmup_ratio,
+        **_warmup_arguments(
+            transformers.TrainingArguments, profile.warmup_ratio
+        ),
         max_grad_norm=profile.max_grad_norm,
         bf16=use_bf16,
         fp16=use_fp16,
