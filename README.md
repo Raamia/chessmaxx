@@ -2,7 +2,7 @@
   <img src="assets/raamichess.png" alt="Chessmaxx" width="350">
 </p>
 
-I like chess and I like LLM.
+I like chess and I like LLM's.
 
 Unfortunately, LLM’s kinda suck at chess.
 
