@@ -43,3 +43,12 @@ def test_summary_uses_all_positions_for_agreement_and_scored_moves_for_blunders(
     assert summary["average_centipawn_regret"] == 175
     assert summary["p95_latency_ms"] == 30
 
+
+def test_summary_marks_engine_metrics_undefined_without_scored_moves():
+    summary = summarize([result("invalid")])
+
+    assert summary["scored_legal_moves"] == 0
+    assert summary["average_centipawn_regret"] is None
+    assert summary["blunder_100_rate"] is None
+    assert summary["blunder_300_rate"] is None
+    assert summary["blunder_500_rate"] is None

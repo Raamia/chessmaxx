@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "chessmaxx"
-version = "0.2.0"
+version = "0.3.0"
 description = "Evaluation and training infrastructure for a chess-playing language model"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -14,11 +14,20 @@ dependencies = [
 
 [project.scripts]
 chessmaxx-eval = "chessmaxx.evaluation.cli:main"
+chessmaxx-data = "chessmaxx.training.cli:main"
+chessmaxx-train = "chessmaxx.training.train_cli:main"
+chessmaxx-memorize = "chessmaxx.training.memorize_cli:main"
 
 [project.optional-dependencies]
 model = [
   "torch>=2.3",
   "transformers>=4.51",
+]
+train = [
+  "torch>=2.3",
+  "transformers>=4.51",
+  "accelerate>=1.0",
+  "peft>=0.18",
 ]
 dev = [
   "pytest>=8.0",
