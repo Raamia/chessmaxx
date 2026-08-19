@@ -1,4 +1,5 @@
 import math
+from types import SimpleNamespace
 
 import pytest
 
@@ -8,6 +9,8 @@ from chessmaxx.training.distillation import (  # noqa: E402
     candidate_sequence_log_likelihoods,
     dense_policy_objective,
 )
+from chessmaxx.training.config import TinySFTProfile  # noqa: E402
+from chessmaxx.training.train import _policy_trainer_class  # noqa: E402
 
 
 def test_candidate_scores_sum_only_supervised_next_tokens():
@@ -51,3 +54,43 @@ def test_policy_objective_ignores_padded_candidates():
 
     assert torch.isfinite(result["loss"])
     assert result["student_log_policy"][0, 2].item() == float("-inf")
+
+
+def test_policy_trainer_backpropagates_through_candidate_logits():
+    class BaseTrainer:
+        pass
+
+    logits = torch.randn((2, 4, 7), requires_grad=True)
+
+    class Model:
+        def __call__(self, **kwargs):
+            assert kwargs["input_ids"].shape == (2, 4)
+            return SimpleNamespace(logits=logits)
+
+    profile = TinySFTProfile(
+        name="policy",
+        model_id="model",
+        objective="multipv_policy",
+        packing=False,
+    )
+    trainer_type = _policy_trainer_class(
+        SimpleNamespace(Trainer=BaseTrainer), profile
+    )
+    trainer = trainer_type()
+    loss = trainer.compute_loss(
+        Model(),
+        {
+            "input_ids": torch.ones((1, 2, 4), dtype=torch.long),
+            "attention_mask": torch.ones((1, 2, 4), dtype=torch.long),
+            "labels": torch.tensor(
+                [[[-100, -100, 2, 3], [-100, -100, 4, 5]]]
+            ),
+            "teacher_probabilities": torch.tensor([[0.6, 0.4]]),
+            "candidate_mask": torch.tensor([[True, True]]),
+        },
+    )
+    loss.backward()
+
+    assert torch.isfinite(loss)
+    assert logits.grad is not None
+    assert torch.isfinite(logits.grad).all()

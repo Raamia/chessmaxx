@@ -103,3 +103,12 @@ def test_isolated_attention_requires_packing():
 
     with pytest.raises(ValueError, match="requires packing"):
         replace(profile, isolate_packed_attention=True)
+
+
+def test_policy_objective_rejects_sequence_packing():
+    profile = load_tiny_sft_profile(
+        "configs/train/tiny-sft-qwen3-0.6b-unpacked.toml"
+    )
+
+    with pytest.raises(ValueError, match="does not support packing"):
+        replace(profile, objective="multipv_policy", packing=True)

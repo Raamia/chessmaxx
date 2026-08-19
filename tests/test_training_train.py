@@ -7,6 +7,7 @@ from chessmaxx.training.schema import TrainingExample
 from chessmaxx.training.train import (
     _warmup_arguments,
     extract_learning_curve,
+    prepare_policy_training_dataset,
     prepare_training_dataset,
     select_split_examples,
     select_training_examples,
@@ -95,6 +96,20 @@ def test_prepare_training_dataset_selects_isolated_packing():
 
     assert isinstance(dataset, IsolatedPackedTokenDataset)
     assert summary.optimizer_records == 1
+
+
+def test_prepare_policy_dataset_counts_all_candidate_sequences():
+    dataset, summary = prepare_policy_training_dataset(
+        [example(1), example(2)],
+        FakeTokenizer(),
+        max_length=256,
+        temperature_cp=100.0,
+        max_candidates=1,
+    )
+
+    assert len(dataset) == 2
+    assert summary.optimizer_records == 2
+    assert summary.supervised_tokens_per_epoch == 4
 
 
 def test_warmup_arguments_supports_transformers_4_signature() -> None:

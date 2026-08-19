@@ -14,6 +14,7 @@ class TinySFTProfile:
     model_id: str
     revision: str = "main"
     method: str = "lora"
+    objective: str = "hard_sft"
     dtype: str = "bfloat16"
     max_examples: int = 100
     max_validation_examples: int = 0
@@ -37,16 +38,24 @@ class TinySFTProfile:
     lora_alpha: int = 32
     lora_dropout: float = 0.0
     lora_target_modules: str = "all-linear"
+    teacher_temperature_cp: float = 100.0
+    max_teacher_candidates: int = 3
+    hard_loss_weight: float = 0.5
+    student_temperature: float = 1.0
 
     def __post_init__(self) -> None:
         if not self.name.strip() or not self.model_id.strip():
             raise ValueError("name and model_id must not be empty")
         if self.method not in {"lora", "full"}:
             raise ValueError("method must be lora or full")
+        if self.objective not in {"hard_sft", "multipv_policy"}:
+            raise ValueError("objective must be hard_sft or multipv_policy")
         if self.dtype not in {"float16", "bfloat16", "float32"}:
             raise ValueError("dtype must be float16, bfloat16, or float32")
         if self.isolate_packed_attention and not self.packing:
             raise ValueError("isolated packed attention requires packing")
+        if self.objective == "multipv_policy" and self.packing:
+            raise ValueError("multi-PV policy training does not support packing")
         for field_name in (
             "max_examples",
             "max_length",
@@ -58,17 +67,26 @@ class TinySFTProfile:
             "save_total_limit",
             "lora_rank",
             "lora_alpha",
+            "max_teacher_candidates",
         ):
             if getattr(self, field_name) <= 0:
                 raise ValueError(f"{field_name} must be positive")
         if self.max_validation_examples < 0:
             raise ValueError("max_validation_examples must be non-negative")
-        for field_name in ("epochs", "learning_rate", "max_grad_norm"):
+        for field_name in (
+            "epochs",
+            "learning_rate",
+            "max_grad_norm",
+            "teacher_temperature_cp",
+            "student_temperature",
+        ):
             if getattr(self, field_name) <= 0:
                 raise ValueError(f"{field_name} must be positive")
         for field_name in ("weight_decay", "warmup_ratio", "lora_dropout"):
             if not 0 <= getattr(self, field_name) < 1:
                 raise ValueError(f"{field_name} must be in [0, 1)")
+        if not 0 <= self.hard_loss_weight <= 1:
+            raise ValueError("hard_loss_weight must be in [0, 1]")
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "TinySFTProfile":

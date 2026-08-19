@@ -187,7 +187,7 @@ def pad_policy_records(
             label_rows.append(labels + [-100] * padding)
         for _ in range(max_candidates - candidate_count):
             input_rows.append([pad_token_id] * max_length)
-            attention_rows.append([0] * max_length)
+            attention_rows.append([1] + [0] * (max_length - 1))
             label_rows.append([-100] * max_length)
         batch["input_ids"].append(input_rows)
         batch["attention_mask"].append(attention_rows)

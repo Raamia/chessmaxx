@@ -14,6 +14,12 @@ from typing import Any
 
 from chessmaxx.training.config import TinySFTProfile
 from chessmaxx.training.dataset import load_training_examples
+from chessmaxx.training.distillation import (
+    PolicyCollator,
+    PolicyTokenDataset,
+    candidate_sequence_log_likelihoods,
+    dense_policy_objective,
+)
 from chessmaxx.training.packing import (
     CausalLMCollator,
     IsolatedCausalLMCollator,
@@ -96,6 +102,34 @@ def prepare_training_dataset(
     )
 
 
+def prepare_policy_training_dataset(
+    examples: list[TrainingExample],
+    tokenizer: Any,
+    *,
+    max_length: int,
+    temperature_cp: float,
+    max_candidates: int,
+) -> tuple[PolicyTokenDataset, TrainingDataSummary]:
+    dataset = PolicyTokenDataset(
+        examples,
+        tokenizer,
+        max_length=max_length,
+        temperature_cp=temperature_cp,
+        max_candidates=max_candidates,
+    )
+    return dataset, TrainingDataSummary(
+        available_train_examples=len(examples),
+        selected_examples=len(examples),
+        optimizer_records=len(dataset),
+        input_tokens_per_epoch=sum(item.candidate_tokens for item in dataset.items),
+        supervised_tokens_per_epoch=sum(
+            candidate.supervised_tokens
+            for item in dataset.items
+            for candidate in item.candidates
+        ),
+    )
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -161,6 +195,48 @@ def extract_learning_curve(
             if isinstance(value, (int, float)):
                 point[key] = value
     return [points[step] for step in sorted(points)]
+
+
+def _policy_trainer_class(transformers: Any, profile: TinySFTProfile) -> Any:
+    class PolicyTrainer(transformers.Trainer):
+        def compute_loss(
+            self,
+            model: Any,
+            inputs: dict[str, Any],
+            return_outputs: bool = False,
+            num_items_in_batch: Any = None,
+        ) -> Any:
+            del num_items_in_batch
+            teacher_probabilities = inputs.pop("teacher_probabilities")
+            candidate_mask = inputs.pop("candidate_mask")
+            labels = inputs.pop("labels")
+            input_ids = inputs.pop("input_ids")
+            attention_mask = inputs.pop("attention_mask")
+            batch_size, candidates, length = input_ids.shape
+            outputs = model(
+                input_ids=input_ids.reshape(batch_size * candidates, length),
+                attention_mask=attention_mask.reshape(
+                    batch_size * candidates, length
+                ),
+                use_cache=False,
+            )
+            logits = outputs.logits.reshape(
+                batch_size, candidates, length, outputs.logits.shape[-1]
+            )
+            sequence_scores, token_counts = candidate_sequence_log_likelihoods(
+                logits, labels
+            )
+            objective = dense_policy_objective(
+                sequence_scores,
+                token_counts,
+                teacher_probabilities,
+                candidate_mask,
+                hard_loss_weight=profile.hard_loss_weight,
+                student_temperature=profile.student_temperature,
+            )
+            return (objective["loss"], outputs) if return_outputs else objective["loss"]
+
+    return PolicyTrainer
 
 
 def run_tiny_sft(
@@ -241,13 +317,22 @@ def run_tiny_sft(
         if profile.gradient_checkpointing:
             model.enable_input_require_grads()
 
-    dataset, data_summary = prepare_training_dataset(
-        examples,
-        tokenizer,
-        max_length=profile.max_length,
-        packing=profile.packing,
-        isolate_packed_attention=profile.isolate_packed_attention,
-    )
+    if profile.objective == "multipv_policy":
+        dataset, data_summary = prepare_policy_training_dataset(
+            examples,
+            tokenizer,
+            max_length=profile.max_length,
+            temperature_cp=profile.teacher_temperature_cp,
+            max_candidates=profile.max_teacher_candidates,
+        )
+    else:
+        dataset, data_summary = prepare_training_dataset(
+            examples,
+            tokenizer,
+            max_length=profile.max_length,
+            packing=profile.packing,
+            isolate_packed_attention=profile.isolate_packed_attention,
+        )
     data_summary = TrainingDataSummary(
         available_train_examples=available_train,
         selected_examples=data_summary.selected_examples,
@@ -258,13 +343,24 @@ def run_tiny_sft(
     validation_dataset = None
     validation_summary = None
     if validation_examples:
-        validation_dataset, raw_validation_summary = prepare_training_dataset(
-            validation_examples,
-            tokenizer,
-            max_length=profile.max_length,
-            packing=profile.packing,
-            isolate_packed_attention=profile.isolate_packed_attention,
-        )
+        if profile.objective == "multipv_policy":
+            validation_dataset, raw_validation_summary = (
+                prepare_policy_training_dataset(
+                    validation_examples,
+                    tokenizer,
+                    max_length=profile.max_length,
+                    temperature_cp=profile.teacher_temperature_cp,
+                    max_candidates=profile.max_teacher_candidates,
+                )
+            )
+        else:
+            validation_dataset, raw_validation_summary = prepare_training_dataset(
+                validation_examples,
+                tokenizer,
+                max_length=profile.max_length,
+                packing=profile.packing,
+                isolate_packed_attention=profile.isolate_packed_attention,
+            )
         validation_summary = ValidationDataSummary(
             available_validation_examples=sum(
                 example.split == "validation" for example in all_examples
@@ -310,12 +406,17 @@ def run_tiny_sft(
         optim="adamw_torch",
         include_num_input_tokens_seen=True,
     )
-    collator = (
-        IsolatedCausalLMCollator(tokenizer.pad_token_id)
-        if profile.isolate_packed_attention
-        else CausalLMCollator(tokenizer.pad_token_id)
-    )
-    trainer = transformers.Trainer(
+    if profile.objective == "multipv_policy":
+        collator = PolicyCollator(tokenizer.pad_token_id)
+        trainer_class = _policy_trainer_class(transformers, profile)
+    else:
+        collator = (
+            IsolatedCausalLMCollator(tokenizer.pad_token_id)
+            if profile.isolate_packed_attention
+            else CausalLMCollator(tokenizer.pad_token_id)
+        )
+        trainer_class = transformers.Trainer
+    trainer = trainer_class(
         model=model,
         args=arguments,
         train_dataset=dataset,
