@@ -4,7 +4,44 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol, TypeVar
+
+
+InputT = TypeVar("InputT")
+OutputT = TypeVar("OutputT")
+
+
+class GenerationOOMError(RuntimeError):
+    """Raised when even one position cannot fit in accelerator memory."""
+
+
+def adaptive_batch_call(
+    items: list[InputT],
+    call: Callable[[list[InputT]], list[OutputT]],
+    is_recoverable: Callable[[Exception], bool],
+    recover: Callable[[], None],
+) -> list[OutputT]:
+    """Bisect a batch after memory errors while preserving input order."""
+
+    if not items:
+        return []
+    try:
+        outputs = call(items)
+    except Exception as exc:
+        if not is_recoverable(exc):
+            raise
+        recover()
+        if len(items) == 1:
+            raise GenerationOOMError(
+                "generation ran out of memory with a single position"
+            ) from exc
+        midpoint = len(items) // 2
+        return adaptive_batch_call(
+            items[:midpoint], call, is_recoverable, recover
+        ) + adaptive_batch_call(items[midpoint:], call, is_recoverable, recover)
+    if len(outputs) != len(items):
+        raise RuntimeError("generation returned a different number of outputs than inputs")
+    return outputs
 
 
 def build_prompt(fen: str) -> str:
@@ -177,8 +214,14 @@ class HuggingFaceMoveGenerator:
         }
 
     def generate_many(self, fens: list[str]) -> list[GeneratedMove]:
-        if not fens:
-            return []
+        return adaptive_batch_call(
+            fens,
+            self._generate_batch,
+            self._is_out_of_memory,
+            self._recover_memory,
+        )
+
+    def _generate_batch(self, fens: list[str]) -> list[GeneratedMove]:
         prompts = [build_prompt(fen) for fen in fens]
         inputs = self.tokenizer(
             prompts,
@@ -207,12 +250,15 @@ class HuggingFaceMoveGenerator:
             raw_output = self.tokenizer.decode(
                 completion, skip_special_tokens=True
             ).strip()
+            output_tokens = sum(
+                int(token_id) != self.tokenizer.pad_token_id for token_id in completion
+            )
             responses.append(
                 GeneratedMove(
                     raw_output=raw_output,
                     latency_ms=latency_per_position,
                     prompt_tokens=int(prompt_length),
-                    output_tokens=int(completion.shape[0]),
+                    output_tokens=output_tokens,
                 )
             )
         return responses
@@ -220,3 +266,13 @@ class HuggingFaceMoveGenerator:
     def _synchronize(self) -> None:
         if self.device.startswith("cuda"):
             self._torch.cuda.synchronize()
+
+    def _is_out_of_memory(self, error: Exception) -> bool:
+        oom_type = getattr(self._torch, "OutOfMemoryError", None)
+        if oom_type is not None and isinstance(error, oom_type):
+            return True
+        return isinstance(error, RuntimeError) and "out of memory" in str(error).lower()
+
+    def _recover_memory(self) -> None:
+        if self.device.startswith("cuda"):
+            self._torch.cuda.empty_cache()

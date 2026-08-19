@@ -1,7 +1,9 @@
 import pytest
 
 from chessmaxx.evaluation.model import (
+    GenerationOOMError,
     HuggingFaceMoveGenerator,
+    adaptive_batch_call,
     build_prompt,
     collect_model_identity,
 )
@@ -70,3 +72,43 @@ def test_collects_resolved_model_and_tokenizer_identity():
     assert identity["trainable_parameter_count"] == 100
     assert identity["vocab_size"] == 151_936
     assert identity["dtype"] == "float16"
+
+
+def test_adaptive_batching_bisects_memory_failures_and_preserves_order():
+    attempts = []
+    recoveries = []
+
+    def call(items):
+        attempts.append(list(items))
+        if len(items) > 1:
+            raise RuntimeError("CUDA out of memory")
+        return [items[0] * 10]
+
+    outputs = adaptive_batch_call(
+        [1, 2, 3, 4],
+        call,
+        lambda error: "out of memory" in str(error),
+        lambda: recoveries.append(True),
+    )
+
+    assert outputs == [10, 20, 30, 40]
+    assert attempts[0] == [1, 2, 3, 4]
+    assert len(recoveries) == 3
+
+
+def test_adaptive_batching_does_not_hide_non_memory_failures():
+    def call(items):
+        raise RuntimeError("model configuration is broken")
+
+    with pytest.raises(RuntimeError, match="configuration is broken"):
+        adaptive_batch_call([1, 2], call, lambda error: False, lambda: None)
+
+
+def test_adaptive_batching_reports_single_position_memory_failure():
+    def call(items):
+        raise RuntimeError("out of memory")
+
+    with pytest.raises(GenerationOOMError, match="single position"):
+        adaptive_batch_call(
+            [1], call, lambda error: "out of memory" in str(error), lambda: None
+        )
