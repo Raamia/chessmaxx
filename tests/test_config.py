@@ -30,4 +30,3 @@ def test_rejects_non_positive_work_settings(field):
 
     with pytest.raises(ValueError, match=f"{field} must be positive"):
         BaselineProfile.from_dict(values)
-

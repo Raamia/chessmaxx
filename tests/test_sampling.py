@@ -59,4 +59,3 @@ def test_different_seeds_change_the_sample(tmp_path):
     assert [position.position_id for position in first] != [
         position.position_id for position in second
     ]
-

@@ -10,4 +10,3 @@ stockfish_nodes = 50000
 stockfish_multipv = 3
 stockfish_threads = 1
 stockfish_hash_mb = 64
-

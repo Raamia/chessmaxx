@@ -44,4 +44,3 @@ def test_journal_rejects_an_empty_existing_file(tmp_path):
 
     with pytest.raises(JournalError, match="missing journal manifest"):
         ResultJournal(path, "run-a").load_or_create()
-

@@ -132,4 +132,3 @@ stockfish_hash_mb = 16
     resumed_report = json.loads(report_path.read_text(encoding="utf-8"))
     assert resumed_report["summary"] == first_report["summary"]
     assert resumed_report["telemetry"]["positions_restored"] == 3
-

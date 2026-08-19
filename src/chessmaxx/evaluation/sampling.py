@@ -142,4 +142,3 @@ def sample_pgn_positions(
     if not selected:
         raise ValueError(f"{source}: no eligible positions found")
     return [position for _, _, position in sorted(selected)]
-

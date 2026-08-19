@@ -67,4 +67,3 @@ def load_baseline_profile(path: str | Path) -> BaselineProfile:
         return BaselineProfile.from_dict(profile)
     except (KeyError, TypeError, ValueError, tomllib.TOMLDecodeError) as exc:
         raise ValueError(f"invalid baseline profile {source}: {exc}") from exc
-
