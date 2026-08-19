@@ -7,6 +7,7 @@ from chessmaxx.training.schema import TrainingExample
 from chessmaxx.training.train import (
     _warmup_arguments,
     prepare_training_dataset,
+    select_split_examples,
     select_training_examples,
 )
 from chessmaxx.training.packing import IsolatedPackedTokenDataset
@@ -47,9 +48,21 @@ def test_select_training_examples_requires_a_train_split() -> None:
     try:
         select_training_examples([example(1, "test")], maximum=100)
     except ValueError as exc:
-        assert "no training examples" in str(exc)
+        assert "contains 0 train examples" in str(exc)
     else:
         raise AssertionError("expected missing training data to fail")
+
+
+def test_split_selection_requires_the_profile_count() -> None:
+    try:
+        select_split_examples(
+            [example(1, "validation")], split="validation", maximum=2
+        )
+    except ValueError as exc:
+        assert "contains 1 validation examples" in str(exc)
+        assert "requires 2" in str(exc)
+    else:
+        raise AssertionError("expected an undersized split to fail")
 
 
 def test_prepare_training_dataset_reports_packing_savings() -> None:
