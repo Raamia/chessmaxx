@@ -142,6 +142,31 @@ def build_parser() -> argparse.ArgumentParser:
         "--limit", type=_positive_int, help="evaluate only the first N positions"
     )
 
+    labelled_base = subparsers.add_parser(
+        "labelled-base", help="evaluate a pinned base model on a labelled split"
+    )
+    labelled_base.add_argument("--training-profile", type=Path, required=True)
+    labelled_base.add_argument("--dataset", type=Path, required=True)
+    labelled_base.add_argument(
+        "--split", choices=("train", "validation", "test"), default="validation"
+    )
+    labelled_base.add_argument("--output", type=Path, required=True)
+    labelled_base.add_argument("--stockfish", default="stockfish")
+    labelled_base.add_argument(
+        "--cache", type=Path, default=Path("artifacts/cache.json")
+    )
+    labelled_base.add_argument("--journal", type=Path)
+    labelled_base.add_argument("--device")
+    labelled_base.add_argument("--batch-size", type=_positive_int, default=8)
+    labelled_base.add_argument("--max-new-tokens", type=_positive_int, default=8)
+    labelled_base.add_argument("--nodes", type=_positive_int, default=50_000)
+    labelled_base.add_argument("--multipv", type=_positive_int, default=3)
+    labelled_base.add_argument("--threads", type=_positive_int, default=1)
+    labelled_base.add_argument("--hash-mb", type=_positive_int, default=64)
+    labelled_base.add_argument(
+        "--limit", type=_positive_int, help="evaluate only the first N positions"
+    )
+
     sample = subparsers.add_parser(
         "sample-pgn", help="create a deterministic frozen position set from PGN"
     )
@@ -305,6 +330,58 @@ def run_adapter(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_labelled_base(args: argparse.Namespace) -> int:
+    profile = load_tiny_sft_profile(args.training_profile)
+    positions = evaluation_positions_for_split(
+        load_training_examples(args.dataset), args.split
+    )
+    if args.limit is not None:
+        positions = positions[: args.limit]
+    model = HuggingFaceMoveGenerator.from_pretrained(
+        profile.model_id,
+        revision=profile.revision,
+        device=args.device,
+        max_new_tokens=args.max_new_tokens,
+        dtype=profile.dtype,
+    )
+    engine_config = StockfishConfig(
+        nodes=args.nodes,
+        multipv=args.multipv,
+        threads=args.threads,
+        hash_mb=args.hash_mb,
+    )
+    settings = {
+        "chessmaxx_version": __version__,
+        "git_commit": _git_commit(),
+        "python": platform.python_version(),
+        "dataset_path": str(args.dataset),
+        "dataset_sha256": _sha256(args.dataset),
+        "training_profile_path": str(args.training_profile),
+        "training_profile_sha256": _sha256(args.training_profile),
+        "training_profile": asdict(profile),
+        "split": args.split,
+        "position_limit": args.limit,
+        "stockfish": asdict(engine_config),
+        "mode": "labelled_base",
+    }
+    with StockfishAnalyzer.open(
+        args.stockfish, config=engine_config, cache_path=args.cache
+    ) as analyzer:
+        journal_path = args.journal or args.output.with_suffix(
+            args.output.suffix + ".progress.jsonl"
+        )
+        report = EvaluationRunner(
+            model,
+            analyzer,
+            batch_size=args.batch_size,
+            settings=settings,
+            journal_path=journal_path,
+        ).run(positions)
+    report.write(args.output)
+    print(json.dumps(report.summary, indent=2, sort_keys=True))
+    return 0
+
+
 def run_sample_pgn(args: argparse.Namespace) -> int:
     positions = sample_pgn_positions(
         args.pgn,
@@ -333,6 +410,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return run_baseline(args)
     if args.command == "adapter":
         return run_adapter(args)
+    if args.command == "labelled-base":
+        return run_labelled_base(args)
     if args.command == "sample-pgn":
         return run_sample_pgn(args)
     raise AssertionError(f"unhandled command: {args.command}")
