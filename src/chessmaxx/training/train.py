@@ -19,6 +19,7 @@ from chessmaxx.training.distillation import (
     PolicyTokenDataset,
     candidate_sequence_log_likelihoods,
     dense_policy_objective,
+    summarize_policy_dataset,
 )
 from chessmaxx.training.packing import (
     CausalLMCollator,
@@ -495,6 +496,28 @@ def run_tiny_sft(
         "learning_curve": extract_learning_curve(trainer.state.log_history),
         "final_model_dir": str(final_dir),
     }
+    if profile.objective == "multipv_policy":
+        policy_summary = summarize_policy_dataset(dataset)
+        vocabulary_size = int(getattr(model.config, "vocab_size", 0))
+        model_dtype_bytes = torch.empty(
+            (), dtype=_dtype(torch, profile.dtype)
+        ).element_size()
+        dense_elements = (
+            profile.per_device_batch_size
+            * profile.max_teacher_candidates
+            * policy_summary.maximum_candidate_length
+            * vocabulary_size
+        )
+        report["distillation"] = {
+            **asdict(policy_summary),
+            "teacher_temperature_cp": profile.teacher_temperature_cp,
+            "student_temperature": profile.student_temperature,
+            "hard_loss_weight": profile.hard_loss_weight,
+            "dense_logits_bytes_per_longest_batch": (
+                dense_elements * model_dtype_bytes
+            ),
+            "float32_loss_tensor_bytes_per_longest_batch": dense_elements * 4,
+        }
     (destination / "training-report.json").write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )

@@ -76,6 +76,20 @@ def test_scaled_profile_enables_held_out_training_evaluation():
     assert profile.save_total_limit == 20
 
 
+def test_scaled_distillation_profile_is_a_dense_policy_control():
+    profile = load_tiny_sft_profile(
+        "configs/train/scaled-distill-qwen3-0.6b.toml"
+    )
+
+    assert profile.objective == "multipv_policy"
+    assert profile.max_examples == 900
+    assert profile.max_validation_examples == 100
+    assert profile.packing is False
+    assert profile.max_teacher_candidates == 3
+    assert profile.teacher_temperature_cp == 100.0
+    assert profile.hard_loss_weight == 0.5
+
+
 def test_rejects_unknown_training_setting():
     with pytest.raises(ValueError, match="unknown tiny-SFT setting"):
         TinySFTProfile.from_dict(

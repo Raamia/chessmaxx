@@ -10,6 +10,7 @@ from chessmaxx.training.distillation import (
     encode_policy_example,
     pad_policy_records,
     policy_entropy,
+    summarize_policy_dataset,
 )
 from chessmaxx.training.schema import TrainingExample
 from chessmaxx.training.tokenize import IGNORE_INDEX
@@ -142,3 +143,22 @@ def test_policy_collation_pads_candidates_and_tokens_independently():
     assert batch["labels"][1][1] == [-100, -100, -100]
     assert batch["teacher_probabilities"] == [[0.7, 0.3], [1.0, 0.0]]
     assert batch["candidate_mask"] == [[True, True], [True, False]]
+
+
+def test_policy_dataset_summary_measures_teacher_and_candidate_shape():
+    dataset = PolicyTokenDataset(
+        [example(), example()],
+        FakeTokenizer(),
+        max_length=256,
+        temperature_cp=100.0,
+        max_candidates=3,
+    )
+
+    summary = summarize_policy_dataset(dataset)
+
+    assert summary.examples == 2
+    assert summary.candidate_sequences == 6
+    assert summary.mean_candidates_per_example == 3.0
+    assert 0 < summary.mean_teacher_top1_probability < 1
+    assert summary.mean_teacher_entropy > 0
+    assert summary.maximum_candidate_length > 0

@@ -33,6 +33,16 @@ class EncodedPolicyExample:
         return sum(len(candidate.input_ids) for candidate in self.candidates)
 
 
+@dataclass(frozen=True, slots=True)
+class PolicyDatasetSummary:
+    examples: int
+    candidate_sequences: int
+    mean_candidates_per_example: float
+    mean_teacher_top1_probability: float
+    mean_teacher_entropy: float
+    maximum_candidate_length: int
+
+
 def centipawn_policy(
     teacher_moves: Sequence[TeacherMove],
     *,
@@ -139,6 +149,31 @@ class PolicyTokenDataset:
             "labels": [list(candidate.labels) for candidate in item.candidates],
             "teacher_probabilities": list(item.teacher_probabilities),
         }
+
+
+def summarize_policy_dataset(dataset: PolicyTokenDataset) -> PolicyDatasetSummary:
+    if not dataset.items:
+        raise ValueError("cannot summarize an empty policy dataset")
+    candidate_count = sum(len(item.candidates) for item in dataset.items)
+    entropies = [
+        -sum(probability * math.log(probability) for probability in item.teacher_probabilities)
+        for item in dataset.items
+    ]
+    return PolicyDatasetSummary(
+        examples=len(dataset.items),
+        candidate_sequences=candidate_count,
+        mean_candidates_per_example=candidate_count / len(dataset.items),
+        mean_teacher_top1_probability=sum(
+            item.teacher_probabilities[0] for item in dataset.items
+        )
+        / len(dataset.items),
+        mean_teacher_entropy=sum(entropies) / len(entropies),
+        maximum_candidate_length=max(
+            len(candidate.input_ids)
+            for item in dataset.items
+            for candidate in item.candidates
+        ),
+    )
 
 
 def pad_policy_records(
