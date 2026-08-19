@@ -1,0 +1,24 @@
+[tiny_sft]
+name = "tiny-sft-qwen3-0.6b-unpacked"
+model_id = "Qwen/Qwen3-0.6B-Base"
+revision = "da87bfb608c14b7cf20ba1ce41287e8de496c0cd"
+method = "lora"
+dtype = "bfloat16"
+max_examples = 100
+max_length = 256
+packing = false
+per_device_batch_size = 2
+gradient_accumulation_steps = 4
+epochs = 20.0
+learning_rate = 0.0002
+weight_decay = 0.0
+warmup_ratio = 0.05
+max_grad_norm = 1.0
+gradient_checkpointing = true
+logging_steps = 1
+save_steps = 25
+seed = 2026
+lora_rank = 16
+lora_alpha = 32
+lora_dropout = 0.0
+lora_target_modules = "all-linear"

@@ -1,3 +1,5 @@
+from dataclasses import asdict
+
 import pytest
 
 from chessmaxx.training.config import TinySFTProfile, load_tiny_sft_profile
@@ -11,6 +13,28 @@ def test_loads_checked_in_tiny_sft_profile():
     assert profile.method == "lora"
     assert profile.max_examples == 100
     assert profile.packing is True
+
+
+def test_unpacked_control_only_changes_name_and_packing():
+    packed = asdict(
+        load_tiny_sft_profile("configs/train/tiny-sft-qwen3-0.6b.toml")
+    )
+    unpacked = asdict(
+        load_tiny_sft_profile(
+            "configs/train/tiny-sft-qwen3-0.6b-unpacked.toml"
+        )
+    )
+
+    differences = {
+        key: (packed[key], unpacked[key])
+        for key in packed
+        if packed[key] != unpacked[key]
+    }
+
+    assert differences == {
+        "name": ("tiny-sft-qwen3-0.6b", "tiny-sft-qwen3-0.6b-unpacked"),
+        "packing": (True, False),
+    }
 
 
 def test_rejects_unknown_training_setting():
