@@ -162,3 +162,30 @@ def test_policy_dataset_summary_measures_teacher_and_candidate_shape():
     assert 0 < summary.mean_teacher_top1_probability < 1
     assert summary.mean_teacher_entropy > 0
     assert summary.maximum_candidate_length > 0
+
+
+def test_policy_dataset_summary_treats_underflowed_probability_as_zero_entropy():
+    sharp_example = TrainingExample(
+        example_id="sharp-position",
+        game_id="game-1",
+        ply=0,
+        fen=chess.STARTING_FEN,
+        target_move="e2e4",
+        teacher_moves=(
+            TeacherMove("e2e4", 100_000),
+            TeacherMove("d2d4", -100_000),
+            TeacherMove("g1f3", -100_000),
+        ),
+        split="train",
+        source="fixture.pgn",
+    )
+    dataset = PolicyTokenDataset(
+        [sharp_example],
+        FakeTokenizer(),
+        max_length=256,
+        temperature_cp=100.0,
+        max_candidates=3,
+    )
+
+    assert dataset.items[0].teacher_probabilities == (1.0, 0.0, 0.0)
+    assert summarize_policy_dataset(dataset).mean_teacher_entropy == 0.0

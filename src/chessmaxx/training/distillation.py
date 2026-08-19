@@ -156,7 +156,11 @@ def summarize_policy_dataset(dataset: PolicyTokenDataset) -> PolicyDatasetSummar
         raise ValueError("cannot summarize an empty policy dataset")
     candidate_count = sum(len(item.candidates) for item in dataset.items)
     entropies = [
-        -sum(probability * math.log(probability) for probability in item.teacher_probabilities)
+        -sum(
+            probability * math.log(probability)
+            for probability in item.teacher_probabilities
+            if probability > 0
+        )
         for item in dataset.items
     ]
     return PolicyDatasetSummary(
