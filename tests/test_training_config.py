@@ -119,6 +119,41 @@ def test_chunked_distillation_profile_only_changes_backend_and_name():
     }
 
 
+def test_batch8_chunked_profile_only_replaces_accumulation_with_physical_batch():
+    batch2 = asdict(
+        load_tiny_sft_profile(
+            "configs/train/scaled-distill-qwen3-0.6b-chunked.toml"
+        )
+    )
+    batch8 = asdict(
+        load_tiny_sft_profile(
+            "configs/train/scaled-distill-qwen3-0.6b-chunked-batch8.toml"
+        )
+    )
+
+    differences = {
+        key: (batch2[key], batch8[key])
+        for key in batch2
+        if batch2[key] != batch8[key]
+    }
+
+    assert differences == {
+        "name": (
+            "scaled-distill-qwen3-0.6b-chunked",
+            "scaled-distill-qwen3-0.6b-chunked-batch8",
+        ),
+        "per_device_batch_size": (2, 8),
+        "gradient_accumulation_steps": (4, 1),
+    }
+    assert (
+        batch2["per_device_batch_size"]
+        * batch2["gradient_accumulation_steps"]
+        == batch8["per_device_batch_size"]
+        * batch8["gradient_accumulation_steps"]
+        == 8
+    )
+
+
 def test_rejects_unknown_training_setting():
     with pytest.raises(ValueError, match="unknown tiny-SFT setting"):
         TinySFTProfile.from_dict(
