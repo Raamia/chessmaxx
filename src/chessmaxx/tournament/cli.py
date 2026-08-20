@@ -115,6 +115,7 @@ def main(argv: list[str] | None = None) -> int:
                 revision=profile.revision,
                 device=args.device,
                 candidate_batch_size=profile.candidate_batch_size,
+                vocabulary_chunk_size=profile.vocabulary_chunk_size,
             )
         else:
             model = HuggingFaceLegalMoveRanker.from_adapter(
@@ -123,6 +124,7 @@ def main(argv: list[str] | None = None) -> int:
                 revision=profile.revision,
                 device=args.device,
                 candidate_batch_size=profile.candidate_batch_size,
+                vocabulary_chunk_size=profile.vocabulary_chunk_size,
             )
     else:
         if adapter_dir is None:

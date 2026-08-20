@@ -235,29 +235,50 @@ def test_legal_move_ranker_selects_highest_likelihood_sequence():
         config = SimpleNamespace(
             _commit_hash="revision",
             vocab_size=64,
-            hidden_size=8,
+            hidden_size=2,
             num_hidden_layers=1,
         )
         dtype = torch.float32
+
+        def __init__(self):
+            self.model = self.Backbone()
+            self.output_head = torch.nn.Linear(2, 64, bias=False)
+            with torch.no_grad():
+                self.output_head.weight.zero_()
+                for token in range(10, 64):
+                    self.output_head.weight[token, 0] = (token - 10) / 10
+                self.output_head.weight[3, 1] = 20.0
+
+        class Backbone:
+            def __call__(self, *, input_ids, attention_mask, use_cache, return_dict):
+                del attention_mask
+                assert use_cache is False
+                assert return_dict is True
+                hidden = torch.zeros((*input_ids.shape, 2))
+                hidden[:, 1, 0] = 1.0
+                hidden[:, 2, 1] = 1.0
+                return SimpleNamespace(last_hidden_state=hidden)
 
         def eval(self):
             return self
 
         def parameters(self):
-            return []
+            return self.output_head.parameters()
 
-        def __call__(self, *, input_ids, attention_mask, use_cache):
-            del attention_mask, use_cache
-            logits = torch.zeros((*input_ids.shape, 64))
-            for row in range(input_ids.shape[0]):
-                move_token = int(input_ids[row, 2])
-                logits[row, 1, move_token] = (move_token - 10) / 10
-                logits[row, 2, 3] = 20.0
-            return SimpleNamespace(logits=logits)
+        def get_output_embeddings(self):
+            return self.output_head
+
+        def __call__(self, **kwargs):
+            raise AssertionError("dense logits must not be materialized")
 
     tokenizer = Tokenizer()
     ranker = HuggingFaceLegalMoveRanker(
-        Model(), tokenizer, "fake", "cpu", candidate_batch_size=4
+        Model(),
+        tokenizer,
+        "fake",
+        "cpu",
+        candidate_batch_size=4,
+        vocabulary_chunk_size=7,
     )
 
     result = ranker.generate_many([chess.STARTING_FEN])[0]
@@ -266,6 +287,7 @@ def test_legal_move_ranker_selects_highest_likelihood_sequence():
         move.uci() for move in chess.Board().legal_moves
     )[-1]
     assert ranker.telemetry["candidate_sequences_scored"] == 20
+    assert ranker.metadata["candidate_scoring_backend"] == "chunked_exact"
 
 
 def test_extracts_hidden_states_without_running_the_dense_lm_head():

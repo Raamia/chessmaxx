@@ -36,6 +36,7 @@ def test_checked_in_elo_profile_has_balanced_ladder():
     assert assisted_profile.selection == "retry"
     assert assisted_profile.max_attempts == 3
     assert assisted_profile.candidate_batch_size == 8
+    assert assisted_profile.vocabulary_chunk_size == 4096
 
 
 def completed_game(game_id, opponent, model_white, model_move):

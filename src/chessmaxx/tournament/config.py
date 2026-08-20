@@ -50,6 +50,7 @@ class EloProfile:
     opponents: tuple[OpponentProfile, ...]
     max_attempts: int = 1
     context: str = "fen"
+    vocabulary_chunk_size: int = 4096
 
     def __post_init__(self) -> None:
         if not self.name.strip() or not self.model_id.strip():
@@ -63,7 +64,12 @@ class EloProfile:
             raise ValueError("unsupported Elo selection mode")
         if self.games_per_opponent <= 0 or self.games_per_opponent % 2:
             raise ValueError("games_per_opponent must be positive and even")
-        if min(self.max_plies, self.batch_size, self.candidate_batch_size) <= 0:
+        if min(
+            self.max_plies,
+            self.batch_size,
+            self.candidate_batch_size,
+            self.vocabulary_chunk_size,
+        ) <= 0:
             raise ValueError("Elo batch and game limits must be positive")
         retrying = self.selection in {"retry", "retry-with-legal-list"}
         if self.max_attempts <= 0 or (retrying and self.max_attempts < 2):

@@ -10,6 +10,7 @@ games_per_opponent = 20
 max_plies = 240
 batch_size = 8
 candidate_batch_size = 8
+vocabulary_chunk_size = 4096
 seed = 2026
 
 [[elo.opponents]]

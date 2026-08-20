@@ -7,7 +7,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Protocol, TypeVar
 
-from chessmaxx.training.sparse_loss import chunked_target_log_probabilities
+from chessmaxx.training.sparse_loss import (
+    causal_hidden_and_projection,
+    chunked_target_log_probabilities,
+)
 
 
 InputT = TypeVar("InputT")
@@ -468,10 +471,17 @@ class HuggingFaceMoveGenerator:
 class HuggingFaceLegalMoveRanker(HuggingFaceMoveGenerator):
     """Choose the highest-likelihood move from the board's legal move set."""
 
-    def __init__(self, *args: Any, candidate_batch_size: int = 16, **kwargs: Any) -> None:
-        if candidate_batch_size <= 0:
-            raise ValueError("candidate_batch_size must be positive")
+    def __init__(
+        self,
+        *args: Any,
+        candidate_batch_size: int = 16,
+        vocabulary_chunk_size: int = 4096,
+        **kwargs: Any,
+    ) -> None:
+        if min(candidate_batch_size, vocabulary_chunk_size) <= 0:
+            raise ValueError("ranker batch and vocabulary chunks must be positive")
         self.candidate_batch_size = candidate_batch_size
+        self.vocabulary_chunk_size = vocabulary_chunk_size
         super().__init__(*args, **kwargs)
 
     @classmethod
@@ -482,6 +492,7 @@ class HuggingFaceLegalMoveRanker(HuggingFaceMoveGenerator):
         revision: str = "main",
         dtype: str = "auto",
         candidate_batch_size: int = 16,
+        vocabulary_chunk_size: int = 4096,
     ) -> "HuggingFaceLegalMoveRanker":
         loaded = HuggingFaceMoveGenerator.from_pretrained(
             model_name,
@@ -503,6 +514,7 @@ class HuggingFaceLegalMoveRanker(HuggingFaceMoveGenerator):
                 "selection_mode": "legal_move_likelihood_rerank",
             },
             candidate_batch_size=candidate_batch_size,
+            vocabulary_chunk_size=vocabulary_chunk_size,
         )
 
     @classmethod
@@ -515,6 +527,7 @@ class HuggingFaceLegalMoveRanker(HuggingFaceMoveGenerator):
         device: str | None = None,
         dtype: str = "auto",
         candidate_batch_size: int = 16,
+        vocabulary_chunk_size: int = 4096,
     ) -> "HuggingFaceLegalMoveRanker":
         loaded = HuggingFaceMoveGenerator.from_adapter(
             adapter_path,
@@ -537,6 +550,7 @@ class HuggingFaceLegalMoveRanker(HuggingFaceMoveGenerator):
                 "selection_mode": "legal_move_likelihood_rerank",
             },
             candidate_batch_size=candidate_batch_size,
+            vocabulary_chunk_size=vocabulary_chunk_size,
         )
 
     def reset_telemetry(self) -> None:
@@ -559,6 +573,8 @@ class HuggingFaceLegalMoveRanker(HuggingFaceMoveGenerator):
         return {
             **super().metadata,
             "candidate_batch_size": self.candidate_batch_size,
+            "vocabulary_chunk_size": self.vocabulary_chunk_size,
+            "candidate_scoring_backend": "chunked_exact",
         }
 
     def generate_many(self, fens: list[str]) -> list[GeneratedMove]:
@@ -604,27 +620,22 @@ class HuggingFaceLegalMoveRanker(HuggingFaceMoveGenerator):
             )
             self._synchronize()
             with self._torch.inference_mode():
-                logits = self.model(
+                projection = causal_hidden_and_projection(
+                    self.model,
                     input_ids=input_tensor,
                     attention_mask=attention_tensor,
-                    use_cache=False,
-                ).logits
-                log_probabilities = self._torch.nn.functional.log_softmax(
-                    logits[:, :-1, :].float(), dim=-1
+                )
+                batch_scores = chunked_response_log_likelihoods(
+                    projection.hidden_states,
+                    input_tensor,
+                    response_starts,
+                    response_lengths,
+                    projection.weight,
+                    bias=projection.bias,
+                    vocabulary_chunk_size=self.vocabulary_chunk_size,
                 )
             self._synchronize()
-            for row_index, (response_start, response_length) in enumerate(
-                zip(response_starts, response_lengths, strict=True)
-            ):
-                targets = input_tensor[
-                    row_index,
-                    response_start : response_start + response_length,
-                ]
-                token_scores = log_probabilities[
-                    row_index,
-                    response_start - 1 : response_start + response_length - 1,
-                ].gather(-1, targets.unsqueeze(-1)).squeeze(-1)
-                scores.append(float(token_scores.sum().item()))
+            scores.extend(float(score) for score in batch_scores.tolist())
             self._candidate_sequences_scored += len(candidates)
             self._candidate_input_tokens += sum(map(sum, attention_mask))
         best_index = max(range(len(moves)), key=lambda index: scores[index])
