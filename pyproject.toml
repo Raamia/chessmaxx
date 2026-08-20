@@ -18,6 +18,7 @@ chessmaxx-data = "chessmaxx.training.cli:main"
 chessmaxx-train = "chessmaxx.training.train_cli:main"
 chessmaxx-memorize = "chessmaxx.training.memorize_cli:main"
 chessmaxx-elo = "chessmaxx.tournament.cli:main"
+chessmaxx-elo-compare = "chessmaxx.tournament.compare:main"
 
 [project.optional-dependencies]
 model = [
