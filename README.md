@@ -481,7 +481,58 @@ chessmaxx-elo `
   --pgn artifacts/elo/constrained-games.pgn
 ```
 
-Run the standalone-LLM comparison with the same profile and separate artifacts by adding `--selection greedy`. Never reuse a journal between modes. Reports include win/draw/loss and score rate overall, by opponent, and by model color; first-try legality; illegal forfeits; termination counts; mean game length and model latency; player identities; adapter/profile/opening fingerprints; generator telemetry; and calibrated Elo with uncertainty when rated games exist.
+Run the standalone-LLM comparison with the same profile and separate artifacts by adding `--selection greedy`. Never reuse a journal between modes. Reports include win/draw/loss and score rate overall, by opponent, and by model color; selected-move legality; genuine first-attempt legality where applicable; illegal forfeits; termination counts; mean game length and model latency; player identities; adapter/profile/opening fingerprints; generator telemetry; and calibrated Elo with uncertainty when rated games exist.
+
+The first 60-game RTX 3060 Ti run established the Phase 8 wiring result. Greedy generation went 0-0-60 with 4.76% first-attempt legality. Legal reranking completed every game and went 0-36-24 overall: 0-19-1 against deterministic random, 0-17-3 against material-greedy, and 0-0-20 against Stockfish 1320. Because the model scored zero points in its only rated games, the harness correctly reported `below_ladder` with a 95% upper bound of 1033.39 rather than claiming a 1033 rating. The run emitted two recoverable allocator warnings at candidate batch 16; checked-in full profiles now use candidate batch 8.
+
+## Assisted-play evaluation
+
+Phase 9 separates four levels of chess scaffolding:
+
+| Selection | Board reminder | Illegal-move behavior | Legal choices exposed |
+|---|---|---|---|
+| `greedy` | Fresh FEN every turn | Immediate forfeit | No |
+| `retry` | Fresh FEN on every attempt | Explain rejection, up to `max_attempts` | No |
+| `retry-with-legal-list` | Fresh FEN on every attempt | Explain rejection, up to `max_attempts` | After the first failure |
+| `legal-rerank` | Fresh FEN every turn | Not applicable | Harness scores all legal moves |
+
+Context is an independent variable. `fen` preserves the canonical position-only prompt. `fen-pgn` also supplies SAN history played after the frozen opening; PGN export alone is never treated as model memory. Every generated attempt retains its raw output, parse error, legality, latency, and token counts. Reports distinguish selected-move legality from first-attempt legality, eventual legality, correction success, attempts per move, and assistance overhead. Reranking leaves generation-only metrics undefined rather than reporting a misleading 100% first-try rate.
+
+The tournament accepts either a trained adapter or the pinned base model, enabling an exact control on the same openings, colors, opponents, and seeds:
+
+```powershell
+# Base Qwen retry condition
+chessmaxx-elo `
+  --profile configs/elo/qwen3-0.6b-assisted.toml `
+  --base-model-only `
+  --selection retry `
+  --openings data/elo/openings-v1.jsonl `
+  --stockfish C:\path\to\stockfish.exe `
+  --report artifacts/elo/base-retry.json `
+  --journal artifacts/elo/base-retry.jsonl `
+  --pgn artifacts/elo/base-retry.pgn
+
+# Trained Qwen under the identical condition
+chessmaxx-elo `
+  --profile configs/elo/qwen3-0.6b-assisted.toml `
+  --adapter-dir artifacts/training/scaled-distill-qwen3-0.6b-chunked-batch8/checkpoints/checkpoint-350 `
+  --selection retry `
+  --openings data/elo/openings-v1.jsonl `
+  --stockfish C:\path\to\stockfish.exe `
+  --report artifacts/elo/adapter-retry.json `
+  --journal artifacts/elo/adapter-retry.jsonl `
+  --pgn artifacts/elo/adapter-retry.pgn
+
+chessmaxx-elo-compare `
+  --reports artifacts/elo/base-retry.json artifacts/elo/adapter-retry.json `
+  --output artifacts/elo/base-vs-adapter.json
+```
+
+Use `--context fen-pgn` for the memory ablation and separate artifacts for every condition. `chessmaxx-elo-compare` verifies matching schedules and opponent metadata before calculating adapter-minus-base deltas.
+
+Legal reranking uses the same exact chunked-vocabulary principle as the training loss. The evaluator runs the transformer body without its dense LM-head output, retains hidden states only for move-response tokens, and calculates the vocabulary log-normalizer in 4,096-token chunks. Reports include the dense full-logit estimate, actual chunk-tensor estimate, response hidden-state estimate, and theoretical reduction. This removes the full `[candidate batch, sequence, vocabulary]` FP32 log-probability allocation that produced recoverable allocator warnings on the 8 GB GPU.
+
+A completed journal can be reopened without erasing its benchmark. The top-level `telemetry` and `benchmark_created_at` remain attached to the original completed run, while `invocation` records how many games the latest command restored or generated and its own zero-work telemetry.
 
 The positional test split used in Phase 6 is not reused for tournament tuning. Game results may select neither a new checkpoint nor new hyperparameters; future tuning requires a newly frozen evaluation ladder.
 

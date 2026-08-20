@@ -178,3 +178,27 @@ def test_adaptive_batching_reports_single_position_memory_failure():
         adaptive_batch_call(
             [1], call, lambda error: "out of memory" in str(error), lambda: None
         )
+
+
+def test_generator_builds_fen_prompts_but_can_execute_explicit_prompts():
+    generator = object.__new__(HuggingFaceMoveGenerator)
+    captured = []
+    generator._generate_prompt_batch = lambda prompts: captured.extend(prompts) or [
+        f"response-{index}" for index in range(len(prompts))
+    ]
+    generator._is_out_of_memory = lambda error: False
+    generator._recover_memory = lambda: None
+
+    assert generator.generate_many(["fen-one"]) == ["response-0"]
+    assert captured == [build_prompt("fen-one")]
+
+    captured.clear()
+    assert generator.generate_prompts(["Correct the illegal move."]) == ["response-0"]
+    assert captured == ["Correct the illegal move."]
+
+
+def test_generator_rejects_empty_explicit_prompt():
+    generator = object.__new__(HuggingFaceMoveGenerator)
+
+    with pytest.raises(ValueError, match="must not be empty"):
+        generator.generate_prompts(["  "])

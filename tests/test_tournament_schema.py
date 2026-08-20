@@ -3,6 +3,7 @@ import pytest
 
 from chessmaxx.tournament.schema import (
     GameResult,
+    MoveAttempt,
     MoveRecord,
     PlayerSpec,
     ScheduledGame,
@@ -10,6 +11,16 @@ from chessmaxx.tournament.schema import (
 
 
 def test_game_result_round_trips_and_scores_both_colors():
+    attempt = MoveAttempt(
+        attempt=1,
+        raw_output="e2e4",
+        move_uci="e2e4",
+        legal=True,
+        error=None,
+        latency_ms=12.5,
+        prompt_tokens=20,
+        output_tokens=3,
+    )
     move = MoveRecord(
         ply=0,
         fen_before=chess.STARTING_FEN,
@@ -18,6 +29,7 @@ def test_game_result_round_trips_and_scores_both_colors():
         move_uci="e2e4",
         legal=True,
         latency_ms=12.5,
+        attempts=(attempt,),
     )
     board = chess.Board()
     board.push_uci("e2e4")
@@ -38,6 +50,45 @@ def test_game_result_round_trips_and_scores_both_colors():
     assert restored == result
     assert restored.score_for("model") == 1.0
     assert restored.score_for("opponent") == 0.0
+
+
+def test_old_move_record_without_attempts_still_deserializes():
+    value = {
+        "ply": 0,
+        "fen_before": chess.STARTING_FEN,
+        "player_id": "model",
+        "raw_output": "e2e4",
+        "move_uci": "e2e4",
+        "legal": True,
+        "latency_ms": 12.5,
+    }
+
+    restored = MoveRecord.from_dict(value)
+
+    assert restored.attempts == ()
+
+
+def test_move_record_rejects_noncontiguous_attempts():
+    attempt = MoveAttempt(
+        attempt=2,
+        raw_output="e2e4",
+        move_uci="e2e4",
+        legal=True,
+        error=None,
+        latency_ms=1.0,
+    )
+
+    with pytest.raises(ValueError, match="contiguous"):
+        MoveRecord(
+            ply=0,
+            fen_before=chess.STARTING_FEN,
+            player_id="model",
+            raw_output="e2e4",
+            move_uci="e2e4",
+            legal=True,
+            latency_ms=1.0,
+            attempts=(attempt,),
+        )
 
 
 def test_schedule_rejects_terminal_opening():

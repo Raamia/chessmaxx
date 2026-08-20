@@ -10,6 +10,7 @@ import subprocess
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from chessmaxx import __version__
 from chessmaxx.evaluation.model import (
@@ -60,17 +61,36 @@ def _git_commit() -> str | None:
         return None
 
 
+def _load_matching_report(path: Path, run_key: str) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"existing tournament report is unreadable: {path}") from exc
+    if not isinstance(value, dict):
+        raise ValueError(f"existing tournament report is not an object: {path}")
+    return value if value.get("run_key") == run_key else None
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="chessmaxx-elo")
     parser.add_argument("--profile", type=Path, required=True)
-    parser.add_argument("--adapter-dir", type=Path, required=True)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--adapter-dir", type=Path)
+    source.add_argument("--base-model-only", action="store_true")
     parser.add_argument("--openings", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--journal", type=Path, required=True)
     parser.add_argument("--pgn", type=Path, required=True)
     parser.add_argument("--stockfish", type=Path)
     parser.add_argument("--device")
-    parser.add_argument("--selection", choices=("greedy", "legal-rerank"))
+    parser.add_argument(
+        "--selection",
+        choices=("greedy", "retry", "retry-with-legal-list", "legal-rerank"),
+    )
+    parser.add_argument("--context", choices=("fen", "fen-pgn"))
+    parser.add_argument("--max-attempts", type=int)
     parser.add_argument("--threads", type=int, default=1)
     parser.add_argument("--hash-mb", type=int, default=64)
     return parser
@@ -80,7 +100,19 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     profile = load_elo_profile(args.profile)
     selection = args.selection or profile.selection
-    adapter_dir = args.adapter_dir.resolve()
+    context = args.context or profile.context
+    retrying = selection in {"retry", "retry-with-legal-list"}
+    configured_attempts = (
+        args.max_attempts
+        if args.max_attempts is not None
+        else profile.max_attempts
+    )
+    max_attempts = configured_attempts if retrying else 1
+    if max_attempts <= 0 or (retrying and max_attempts < 2):
+        raise ValueError("retry modes require at least two move attempts")
+    if args.max_attempts is not None and not retrying:
+        raise ValueError("--max-attempts requires a retry selection mode")
+    adapter_dir = args.adapter_dir.resolve() if args.adapter_dir else None
     openings = load_openings(args.openings)
     schedules = paired_schedule(
         model_id=profile.model_player_id,
@@ -90,21 +122,39 @@ def main(argv: list[str] | None = None) -> int:
         seed=profile.seed,
     )
     if selection == "legal-rerank":
-        model = HuggingFaceLegalMoveRanker.from_adapter(
-            adapter_dir,
-            base_model_name=profile.model_id,
-            revision=profile.revision,
-            device=args.device,
-            candidate_batch_size=profile.candidate_batch_size,
-        )
+        if adapter_dir is None:
+            model = HuggingFaceLegalMoveRanker.from_pretrained(
+                profile.model_id,
+                revision=profile.revision,
+                device=args.device,
+                candidate_batch_size=profile.candidate_batch_size,
+                vocabulary_chunk_size=profile.vocabulary_chunk_size,
+            )
+        else:
+            model = HuggingFaceLegalMoveRanker.from_adapter(
+                adapter_dir,
+                base_model_name=profile.model_id,
+                revision=profile.revision,
+                device=args.device,
+                candidate_batch_size=profile.candidate_batch_size,
+                vocabulary_chunk_size=profile.vocabulary_chunk_size,
+            )
     else:
-        model = HuggingFaceMoveGenerator.from_adapter(
-            adapter_dir,
-            base_model_name=profile.model_id,
-            revision=profile.revision,
-            device=args.device,
-            max_new_tokens=8,
-        )
+        if adapter_dir is None:
+            model = HuggingFaceMoveGenerator.from_pretrained(
+                profile.model_id,
+                revision=profile.revision,
+                device=args.device,
+                max_new_tokens=8,
+            )
+        else:
+            model = HuggingFaceMoveGenerator.from_adapter(
+                adapter_dir,
+                base_model_name=profile.model_id,
+                revision=profile.revision,
+                device=args.device,
+                max_new_tokens=8,
+            )
     generators = {profile.model_player_id: model}
     closeable: list[StockfishMoveGenerator] = []
     try:
@@ -136,8 +186,13 @@ def main(argv: list[str] | None = None) -> int:
             "profile": asdict(profile),
             "profile_sha256": _sha256(args.profile),
             "openings_sha256": _sha256(args.openings),
-            "adapter_sha256": _tree_sha256(adapter_dir),
+            "model_source": "base" if adapter_dir is None else "adapter",
+            "adapter_sha256": (
+                _tree_sha256(adapter_dir) if adapter_dir is not None else None
+            ),
             "selection": selection,
+            "context": context,
+            "max_attempts": max_attempts,
             "batch_size": profile.batch_size,
             "max_plies": profile.max_plies,
         }
@@ -166,9 +221,33 @@ def main(argv: list[str] | None = None) -> int:
             generators,
             batch_size=profile.batch_size,
             max_plies=profile.max_plies,
+            assisted_player_id=(
+                profile.model_player_id
+                if retrying or context == "fen-pgn"
+                else None
+            ),
+            max_attempts=max_attempts,
+            include_legal_moves=selection == "retry-with-legal-list",
+            include_move_history=context == "fen-pgn",
             on_result=journal.append,
         )
         generated = runner.run(pending)
+        invocation_telemetry = runner.telemetry
+        previous_report = _load_matching_report(args.report, run_key)
+        preserve_benchmark = not generated and previous_report is not None
+        benchmark_telemetry = (
+            previous_report["telemetry"]
+            if preserve_benchmark
+            else invocation_telemetry
+        )
+        created_at = datetime.now(UTC).isoformat()
+        benchmark_created_at = (
+            previous_report.get(
+                "benchmark_created_at", previous_report.get("created_at")
+            )
+            if preserve_benchmark
+            else created_at
+        )
         results_by_id = {**restored, **{result.game_id: result for result in generated}}
         results = tuple(results_by_id[schedule.game_id] for schedule in schedules)
         opponent_ratings = {
@@ -178,7 +257,8 @@ def main(argv: list[str] | None = None) -> int:
         }
         report = {
             "schema_version": 1,
-            "created_at": datetime.now(UTC).isoformat(),
+            "created_at": created_at,
+            "benchmark_created_at": benchmark_created_at,
             "chessmaxx_version": __version__,
             "git_commit": _git_commit(),
             "python": platform.python_version(),
@@ -186,11 +266,19 @@ def main(argv: list[str] | None = None) -> int:
             "settings": settings,
             "players": player_metadata,
             "games_restored": len(restored),
-            "telemetry": runner.telemetry,
+            "telemetry": benchmark_telemetry,
+            "invocation": {
+                "created_at": created_at,
+                "games_restored": len(restored),
+                "games_generated": len(generated),
+                "benchmark_telemetry_preserved": preserve_benchmark,
+                "telemetry": invocation_telemetry,
+            },
             "summary": summarize_tournament(
                 results,
                 model_id=profile.model_player_id,
                 opponent_ratings=opponent_ratings,
+                selection=selection,
             ),
             "games": [result.to_dict() for result in results],
         }

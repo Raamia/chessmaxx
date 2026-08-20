@@ -16,7 +16,10 @@ from chessmaxx.training.sparse_loss import (  # noqa: E402
     chunked_candidate_sequence_log_likelihoods,
     chunked_target_log_probabilities,
 )
-from chessmaxx.evaluation.model import HuggingFaceLegalMoveRanker  # noqa: E402
+from chessmaxx.evaluation.model import (  # noqa: E402
+    HuggingFaceLegalMoveRanker,
+    chunked_response_log_likelihoods,
+)
 import chess  # noqa: E402
 
 
@@ -32,6 +35,47 @@ def test_candidate_scores_sum_only_supervised_next_tokens():
     assert scores.tolist()[0] == pytest.approx(
         [-2 * math.log(5), -math.log(5)]
     )
+
+
+@pytest.mark.parametrize("chunk_size", [1, 3, 8])
+def test_chunked_response_scores_match_dense_sequence_scores(chunk_size):
+    torch.manual_seed(29)
+    hidden = torch.randn((2, 6, 4))
+    input_ids = torch.tensor(
+        [[1, 2, 3, 4, 5, 0], [1, 2, 6, 7, 8, 9]]
+    )
+    starts = [2, 3]
+    lengths = [3, 2]
+    weight = torch.randn((10, 4))
+    bias = torch.randn(10)
+    dense_log_probabilities = torch.nn.functional.log_softmax(
+        torch.nn.functional.linear(hidden, weight, bias).float(), dim=-1
+    )
+    expected = torch.stack(
+        [
+            dense_log_probabilities[row, start - 1 : start + length - 1]
+            .gather(
+                -1,
+                input_ids[row, start : start + length].unsqueeze(-1),
+            )
+            .sum()
+            for row, (start, length) in enumerate(
+                zip(starts, lengths, strict=True)
+            )
+        ]
+    )
+
+    actual = chunked_response_log_likelihoods(
+        hidden,
+        input_ids,
+        starts,
+        lengths,
+        weight,
+        bias=bias,
+        vocabulary_chunk_size=chunk_size,
+    )
+
+    torch.testing.assert_close(actual, expected)
 
 
 def test_policy_kl_is_zero_when_student_matches_teacher():
@@ -191,29 +235,50 @@ def test_legal_move_ranker_selects_highest_likelihood_sequence():
         config = SimpleNamespace(
             _commit_hash="revision",
             vocab_size=64,
-            hidden_size=8,
+            hidden_size=2,
             num_hidden_layers=1,
         )
         dtype = torch.float32
+
+        def __init__(self):
+            self.model = self.Backbone()
+            self.output_head = torch.nn.Linear(2, 64, bias=False)
+            with torch.no_grad():
+                self.output_head.weight.zero_()
+                for token in range(10, 64):
+                    self.output_head.weight[token, 0] = (token - 10) / 10
+                self.output_head.weight[3, 1] = 20.0
+
+        class Backbone:
+            def __call__(self, *, input_ids, attention_mask, use_cache, return_dict):
+                del attention_mask
+                assert use_cache is False
+                assert return_dict is True
+                hidden = torch.zeros((*input_ids.shape, 2))
+                hidden[:, 1, 0] = 1.0
+                hidden[:, 2, 1] = 1.0
+                return SimpleNamespace(last_hidden_state=hidden)
 
         def eval(self):
             return self
 
         def parameters(self):
-            return []
+            return self.output_head.parameters()
 
-        def __call__(self, *, input_ids, attention_mask, use_cache):
-            del attention_mask, use_cache
-            logits = torch.zeros((*input_ids.shape, 64))
-            for row in range(input_ids.shape[0]):
-                move_token = int(input_ids[row, 2])
-                logits[row, 1, move_token] = (move_token - 10) / 10
-                logits[row, 2, 3] = 20.0
-            return SimpleNamespace(logits=logits)
+        def get_output_embeddings(self):
+            return self.output_head
+
+        def __call__(self, **kwargs):
+            raise AssertionError("dense logits must not be materialized")
 
     tokenizer = Tokenizer()
     ranker = HuggingFaceLegalMoveRanker(
-        Model(), tokenizer, "fake", "cpu", candidate_batch_size=4
+        Model(),
+        tokenizer,
+        "fake",
+        "cpu",
+        candidate_batch_size=4,
+        vocabulary_chunk_size=7,
     )
 
     result = ranker.generate_many([chess.STARTING_FEN])[0]
@@ -222,6 +287,13 @@ def test_legal_move_ranker_selects_highest_likelihood_sequence():
         move.uci() for move in chess.Board().legal_moves
     )[-1]
     assert ranker.telemetry["candidate_sequences_scored"] == 20
+    assert ranker.metadata["candidate_scoring_backend"] == "chunked_exact"
+    estimates = ranker.telemetry["candidate_scoring_memory_estimates"]
+    assert ranker.telemetry["maximum_response_tokens_per_batch"] == 8
+    assert estimates["dense_fp32_log_probabilities_bytes"] > estimates[
+        "chunk_fp32_logits_bytes"
+    ]
+    assert estimates["theoretical_fp32_log_probability_reduction"] > 1
 
 
 def test_extracts_hidden_states_without_running_the_dense_lm_head():
