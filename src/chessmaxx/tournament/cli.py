@@ -10,6 +10,7 @@ import subprocess
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from chessmaxx import __version__
 from chessmaxx.evaluation.model import (
@@ -58,6 +59,18 @@ def _git_commit() -> str | None:
         ).stdout.strip()
     except (FileNotFoundError, subprocess.CalledProcessError):
         return None
+
+
+def _load_matching_report(path: Path, run_key: str) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"existing tournament report is unreadable: {path}") from exc
+    if not isinstance(value, dict):
+        raise ValueError(f"existing tournament report is not an object: {path}")
+    return value if value.get("run_key") == run_key else None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -219,6 +232,22 @@ def main(argv: list[str] | None = None) -> int:
             on_result=journal.append,
         )
         generated = runner.run(pending)
+        invocation_telemetry = runner.telemetry
+        previous_report = _load_matching_report(args.report, run_key)
+        preserve_benchmark = not generated and previous_report is not None
+        benchmark_telemetry = (
+            previous_report["telemetry"]
+            if preserve_benchmark
+            else invocation_telemetry
+        )
+        created_at = datetime.now(UTC).isoformat()
+        benchmark_created_at = (
+            previous_report.get(
+                "benchmark_created_at", previous_report.get("created_at")
+            )
+            if preserve_benchmark
+            else created_at
+        )
         results_by_id = {**restored, **{result.game_id: result for result in generated}}
         results = tuple(results_by_id[schedule.game_id] for schedule in schedules)
         opponent_ratings = {
@@ -228,7 +257,8 @@ def main(argv: list[str] | None = None) -> int:
         }
         report = {
             "schema_version": 1,
-            "created_at": datetime.now(UTC).isoformat(),
+            "created_at": created_at,
+            "benchmark_created_at": benchmark_created_at,
             "chessmaxx_version": __version__,
             "git_commit": _git_commit(),
             "python": platform.python_version(),
@@ -236,7 +266,14 @@ def main(argv: list[str] | None = None) -> int:
             "settings": settings,
             "players": player_metadata,
             "games_restored": len(restored),
-            "telemetry": runner.telemetry,
+            "telemetry": benchmark_telemetry,
+            "invocation": {
+                "created_at": created_at,
+                "games_restored": len(restored),
+                "games_generated": len(generated),
+                "benchmark_telemetry_preserved": preserve_benchmark,
+                "telemetry": invocation_telemetry,
+            },
             "summary": summarize_tournament(
                 results,
                 model_id=profile.model_player_id,

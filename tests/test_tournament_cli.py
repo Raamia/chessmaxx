@@ -69,6 +69,10 @@ def test_elo_cli_runs_and_resumes_smoke_tournament(tmp_path, monkeypatch):
     first = json.loads(report.read_text(encoding="utf-8"))
     assert len(first["games"]) == 4
     assert first["games_restored"] == 0
+    assert first["invocation"]["games_generated"] == 4
+    assert first["invocation"]["benchmark_telemetry_preserved"] is False
+    first_telemetry = first["telemetry"]
+    first_benchmark_created_at = first["benchmark_created_at"]
     assert pgn.read_text(encoding="utf-8").count(
         '[Event "Chessmaxx Elo Evaluation"]'
     ) == 4
@@ -76,6 +80,13 @@ def test_elo_cli_runs_and_resumes_smoke_tournament(tmp_path, monkeypatch):
     assert cli.main(arguments) == 0
     resumed = json.loads(report.read_text(encoding="utf-8"))
     assert resumed["games_restored"] == 4
+    assert resumed["telemetry"] == first_telemetry
+    assert resumed["benchmark_created_at"] == first_benchmark_created_at
+    assert resumed["invocation"]["games_generated"] == 0
+    assert resumed["invocation"]["benchmark_telemetry_preserved"] is True
+    assert resumed["invocation"]["telemetry"]["chessmaxx"][
+        "positions_generated"
+    ] == 0
     assert journal.read_text(encoding="utf-8").count("\n") == 5
 
 
