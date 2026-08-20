@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "chessmaxx"
-version = "0.7.0"
+version = "1.0.0"
 description = "Evaluation and training infrastructure for a chess-playing language model"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -17,6 +17,7 @@ chessmaxx-eval = "chessmaxx.evaluation.cli:main"
 chessmaxx-data = "chessmaxx.training.cli:main"
 chessmaxx-train = "chessmaxx.training.train_cli:main"
 chessmaxx-memorize = "chessmaxx.training.memorize_cli:main"
+chessmaxx-elo = "chessmaxx.tournament.cli:main"
 
 [project.optional-dependencies]
 model = [

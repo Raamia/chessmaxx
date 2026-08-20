@@ -433,6 +433,58 @@ The dense and chunked profiles must differ only in `name` and `policy_loss_backe
 
 Peak reserved memory remains raw allocator telemetry and may exceed physically resident VRAM under the Windows CUDA stack. Peak allocated memory is the in-process comparison until external NVML sampling is added. The sparse PyTorch result becomes the correctness and systems baseline for a later fused Triton implementation.
 
+### Measured RTX 3060 Ti results
+
+All three five-epoch runs used the same 900 training positions, 100 validation positions, effective optimizer batch of eight, Qwen revision, teacher policy, and LoRA configuration.
+
+| Training path | Physical batch | Accumulation | Peak allocated VRAM | Wall time | Positions/hour | Final validation loss |
+|---|---:|---:|---:|---:|---:|---:|
+| Dense Phase 6 | 2 | 4 | 5.04 GiB | 875.02 s | 18,513.95 | 0.86991 |
+| Chunked exact | 2 | 4 | 1.38 GiB | 904.22 s | 17,915.97 | 0.86996 |
+| Chunked exact, scaled batch | 8 | 1 | 1.63 GiB | 589.30 s | 27,490.14 | 0.86672 |
+
+The exact chunked loss reduced peak allocated VRAM by 72.66%. That headroom supported a four-times-larger physical batch while preserving the optimizer batch, improving useful chess-position throughput by 53.4% over chunked batch two and 48.5% over dense training. The batch-eight run completed 34.8% faster than chunked batch two without a fatal OOM or a meaningful validation regression. Raw Trainer loss is accumulation-dependent in this Transformers environment; accumulation-normalized losses were 0.81085, 0.80889, and 0.81456 respectively.
+
+## Elo tournament evaluation
+
+Phase 8 plays complete, resumable games instead of scoring frozen positions. Every opening is played twice against each opponent with model colors reversed. Completed games are fsynced to an append-only journal, raw move attempts are retained, and final games are exported as PGN.
+
+Two modes answer different questions:
+
+- `greedy` measures the standalone language model. Its first generated move must parse and be legal; otherwise the game ends in an immediate forfeit.
+- `legal-rerank` scores every legal move and chooses the model's highest-likelihood response. This supports complete games and measures the learned policy, but its legality is structural and its rating is always labeled constrained.
+
+Random and material-greedy opponents establish lower-rung capability but have no declared Elo and are excluded from absolute rating. Stockfish opponents may declare a UCI Elo anchor only when the engine identity, `UCI_LimitStrength`, `UCI_Elo`, move time, threads, and hash settings are recorded. The resulting estimate is specific to that fixed Chessmaxx ladder. A clean sweep is reported as `below_ladder` or `above_ladder` with a one-sided 95% bound rather than a fabricated point rating.
+
+Run the four-game wiring check first:
+
+```powershell
+chessmaxx-elo `
+  --profile configs/elo/qwen3-0.6b-elo-smoke.toml `
+  --adapter-dir artifacts/training/scaled-distill-qwen3-0.6b-chunked-batch8/checkpoints/checkpoint-350 `
+  --openings data/elo/openings-v1.jsonl `
+  --report artifacts/elo/smoke-report.json `
+  --journal artifacts/elo/smoke-games.jsonl `
+  --pgn artifacts/elo/smoke-games.pgn
+```
+
+Then run the constrained 60-game ladder:
+
+```powershell
+chessmaxx-elo `
+  --profile configs/elo/qwen3-0.6b-elo.toml `
+  --adapter-dir artifacts/training/scaled-distill-qwen3-0.6b-chunked-batch8/checkpoints/checkpoint-350 `
+  --openings data/elo/openings-v1.jsonl `
+  --stockfish C:\path\to\stockfish.exe `
+  --report artifacts/elo/constrained-report.json `
+  --journal artifacts/elo/constrained-games.jsonl `
+  --pgn artifacts/elo/constrained-games.pgn
+```
+
+Run the standalone-LLM comparison with the same profile and separate artifacts by adding `--selection greedy`. Never reuse a journal between modes. Reports include win/draw/loss and score rate overall, by opponent, and by model color; first-try legality; illegal forfeits; termination counts; mean game length and model latency; player identities; adapter/profile/opening fingerprints; generator telemetry; and calibrated Elo with uncertainty when rated games exist.
+
+The positional test split used in Phase 6 is not reused for tournament tuning. Game results may select neither a new checkpoint nor new hyperparameters; future tuning requires a newly frozen evaluation ladder.
+
 ### Position format
 
 Evaluation sets use one JSON object per line:
