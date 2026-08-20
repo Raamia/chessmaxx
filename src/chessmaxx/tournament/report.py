@@ -23,6 +23,7 @@ def summarize_tournament(
     scores: list[float] = []
     model_latencies: list[float] = []
     model_illegal_forfeits = 0
+    model_moves = 0
     terminations = Counter(result.termination for result in results)
     for result in results:
         opponent_id = (
@@ -39,6 +40,7 @@ def summarize_tournament(
             )
         for move in result.moves:
             if move.player_id == model_id:
+                model_moves += 1
                 model_latencies.append(move.latency_ms)
                 if not move.legal:
                     model_illegal_forfeits += 1
@@ -56,6 +58,13 @@ def summarize_tournament(
     return {
         **summarize_group(results),
         "model_illegal_forfeits": model_illegal_forfeits,
+        "model_move_attempts": model_moves,
+        "model_first_try_legal_move_rate": (
+            (model_moves - model_illegal_forfeits) / model_moves
+            if model_moves
+            else None
+        ),
+        "mean_game_plies": mean(len(result.moves) for result in results),
         "model_mean_move_latency_ms": (
             mean(model_latencies) if model_latencies else None
         ),
@@ -63,6 +72,14 @@ def summarize_tournament(
         "by_opponent": {
             opponent: summarize_group(games)
             for opponent, games in sorted(by_opponent.items())
+        },
+        "by_model_color": {
+            "white": summarize_group(
+                [result for result in results if result.white_id == model_id]
+            ),
+            "black": summarize_group(
+                [result for result in results if result.black_id == model_id]
+            ),
         },
         "calibrated_elo": (
             estimate_rating(observations).to_dict() if observations else None

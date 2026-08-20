@@ -55,6 +55,10 @@ def test_tournament_summary_separates_unrated_games_from_elo():
 
     assert summary["games"] == 2
     assert summary["model_illegal_forfeits"] == 2
+    assert summary["model_move_attempts"] == 2
+    assert summary["model_first_try_legal_move_rate"] == 0.0
+    assert summary["by_model_color"]["white"]["games"] == 1
+    assert summary["by_model_color"]["black"]["games"] == 1
     assert summary["calibrated_elo"]["games"] == 1
     assert summary["calibrated_elo"]["status"] == "below_ladder"
     json.dumps(summary)
