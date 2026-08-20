@@ -390,6 +390,49 @@ On the RTX 3060 Ti, the dense run should:
 
 The first systems comparison is dense hard SFT versus dense multi-PV policy distillation: throughput, peak VRAM, and chess metrics under the same hardware and data budget. The dense policy implementation is intentionally straightforward; its measured allocation is the target for the later sparse loss and Triton-kernel phases.
 
+## Chunked exact policy loss
+
+Phase 7 keeps the Phase 6 teacher policy, dataset order, LoRA configuration, optimizer batch, seed, and five-epoch budget fixed. It changes only how PyTorch computes target-token probabilities. This isolates an infrastructure question: can exact multi-PV training avoid Qwen's full sequence-by-vocabulary loss tensor?
+
+For a supervised token with hidden state `h`, vocabulary projection `W`, and target token `y`, both implementations calculate:
+
+```text
+log p(y | h) = h · W[y] + b[y] - logsumexp(h · W[v] + b[v] for every token v)
+```
+
+The dense control materializes logits for every prompt and response position. The chunked implementation instead:
+
+1. Runs Qwen's transformer body without its eager language-model head.
+2. Gathers hidden states only at supervised response-token positions.
+3. Streams the frozen vocabulary projection in blocks of 4,096 tokens.
+4. Combines block normalizers with `logaddexp`, preserving the exact full-softmax denominator.
+5. Recomputes one block at a time during backward instead of retaining vocabulary logits.
+
+This is sparse in supervised positions and bounded in vocabulary-memory use, but it is not sampled softmax: every vocabulary row still contributes to the result. The extra backward computation is an intentional memory-for-compute trade. LoRA keeps the output projection frozen while gradients flow through response hidden states into the transformer adapters.
+
+Run the controlled chunked experiment on the CUDA machine:
+
+```powershell
+chessmaxx-train `
+  --profile configs/train/scaled-distill-qwen3-0.6b-chunked.toml `
+  --dataset data/processed/scaled-sft-v1.jsonl `
+  --output-dir artifacts/training/scaled-distill-qwen3-0.6b-chunked
+```
+
+The dense and chunked profiles must differ only in `name` and `policy_loss_backend`. Their reports include dense full-logit bytes, maximum supervised tokens, per-chunk BF16 and FP32 logit bytes, saved hidden-state bytes, and a theoretical logit-reduction ratio alongside measured peak VRAM and wall time.
+
+### Phase 7 acceptance checks
+
+- Dense and chunked unit tests match target log probabilities, candidate sequence scores, final policy loss, and hidden-state gradients.
+- The output projection remains frozen and dense causal-LM logits are never created on the chunked path.
+- Training and validation losses remain finite for all 565 optimizer steps.
+- Dataset, teacher-policy, LoRA, optimizer, and schedule settings match the Phase 6 control.
+- Peak allocated VRAM decreases on the RTX 3060 Ti.
+- Wall time, input tokens/second, supervised tokens/second, and positions/hour expose the recomputation cost.
+- Validation evaluation checks for a catastrophic capability regression, but the already-consumed Phase 6 test split is not reused for tuning or selection.
+
+Peak reserved memory remains raw allocator telemetry and may exceed physically resident VRAM under the Windows CUDA stack. Peak allocated memory is the in-process comparison until external NVML sampling is added. The sparse PyTorch result becomes the correctness and systems baseline for a later fused Triton implementation.
+
 ### Position format
 
 Evaluation sets use one JSON object per line:

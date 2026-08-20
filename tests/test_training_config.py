@@ -88,6 +88,70 @@ def test_scaled_distillation_profile_is_a_dense_policy_control():
     assert profile.max_teacher_candidates == 3
     assert profile.teacher_temperature_cp == 100.0
     assert profile.hard_loss_weight == 0.5
+    assert profile.policy_loss_backend == "dense"
+    assert profile.vocabulary_chunk_size == 4096
+
+
+def test_chunked_distillation_profile_only_changes_backend_and_name():
+    dense = asdict(
+        load_tiny_sft_profile(
+            "configs/train/scaled-distill-qwen3-0.6b.toml"
+        )
+    )
+    chunked = asdict(
+        load_tiny_sft_profile(
+            "configs/train/scaled-distill-qwen3-0.6b-chunked.toml"
+        )
+    )
+
+    differences = {
+        key: (dense[key], chunked[key])
+        for key in dense
+        if dense[key] != chunked[key]
+    }
+
+    assert differences == {
+        "name": (
+            "scaled-distill-qwen3-0.6b",
+            "scaled-distill-qwen3-0.6b-chunked",
+        ),
+        "policy_loss_backend": ("dense", "chunked_exact"),
+    }
+
+
+def test_batch8_chunked_profile_only_replaces_accumulation_with_physical_batch():
+    batch2 = asdict(
+        load_tiny_sft_profile(
+            "configs/train/scaled-distill-qwen3-0.6b-chunked.toml"
+        )
+    )
+    batch8 = asdict(
+        load_tiny_sft_profile(
+            "configs/train/scaled-distill-qwen3-0.6b-chunked-batch8.toml"
+        )
+    )
+
+    differences = {
+        key: (batch2[key], batch8[key])
+        for key in batch2
+        if batch2[key] != batch8[key]
+    }
+
+    assert differences == {
+        "name": (
+            "scaled-distill-qwen3-0.6b-chunked",
+            "scaled-distill-qwen3-0.6b-chunked-batch8",
+        ),
+        "per_device_batch_size": (2, 8),
+        "gradient_accumulation_steps": (4, 1),
+    }
+    assert (
+        batch2["per_device_batch_size"]
+        * batch2["gradient_accumulation_steps"]
+        == batch8["per_device_batch_size"]
+        * batch8["gradient_accumulation_steps"]
+        == 8
+    )
 
 
 def test_rejects_unknown_training_setting():
@@ -126,3 +190,36 @@ def test_policy_objective_rejects_sequence_packing():
 
     with pytest.raises(ValueError, match="does not support packing"):
         replace(profile, objective="multipv_policy", packing=True)
+
+
+def test_chunked_policy_backend_requires_policy_objective():
+    profile = load_tiny_sft_profile(
+        "configs/train/tiny-sft-qwen3-0.6b-unpacked.toml"
+    )
+
+    with pytest.raises(ValueError, match="multi-PV policy objective"):
+        replace(profile, policy_loss_backend="chunked_exact")
+
+
+@pytest.mark.parametrize("backend", ["sparse", "triton"])
+def test_rejects_unknown_policy_loss_backend(backend):
+    with pytest.raises(ValueError, match="policy_loss_backend"):
+        TinySFTProfile(
+            name="bad",
+            model_id="model",
+            objective="multipv_policy",
+            packing=False,
+            policy_loss_backend=backend,
+        )
+
+
+def test_chunked_policy_backend_requires_frozen_lora_output_head():
+    with pytest.raises(ValueError, match="frozen output head"):
+        TinySFTProfile(
+            name="bad",
+            model_id="model",
+            method="full",
+            objective="multipv_policy",
+            packing=False,
+            policy_loss_backend="chunked_exact",
+        )
