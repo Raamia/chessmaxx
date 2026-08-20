@@ -427,6 +427,37 @@ class HuggingFaceLegalMoveRanker(HuggingFaceMoveGenerator):
         super().__init__(*args, **kwargs)
 
     @classmethod
+    def from_pretrained(
+        cls,
+        model_name: str,
+        device: str | None = None,
+        revision: str = "main",
+        dtype: str = "auto",
+        candidate_batch_size: int = 16,
+    ) -> "HuggingFaceLegalMoveRanker":
+        loaded = HuggingFaceMoveGenerator.from_pretrained(
+            model_name,
+            device=device,
+            revision=revision,
+            dtype=dtype,
+            max_new_tokens=8,
+        )
+        return cls(
+            loaded.model,
+            loaded.tokenizer,
+            loaded.model_name,
+            loaded.device,
+            max_new_tokens=8,
+            revision=loaded.revision,
+            transformers_version=loaded.transformers_version,
+            identity_overrides={
+                **loaded.identity_overrides,
+                "selection_mode": "legal_move_likelihood_rerank",
+            },
+            candidate_batch_size=candidate_batch_size,
+        )
+
+    @classmethod
     def from_adapter(
         cls,
         adapter_path: str | Path,

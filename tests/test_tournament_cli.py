@@ -66,3 +66,33 @@ def test_elo_cli_runs_and_resumes_smoke_tournament(tmp_path, monkeypatch):
     resumed = json.loads(report.read_text(encoding="utf-8"))
     assert resumed["games_restored"] == 4
     assert journal.read_text(encoding="utf-8").count("\n") == 5
+
+
+def test_elo_cli_can_evaluate_the_pinned_base_model(tmp_path, monkeypatch):
+    report = tmp_path / "base-report.json"
+    monkeypatch.setattr(
+        cli.HuggingFaceLegalMoveRanker,
+        "from_pretrained",
+        lambda *args, **kwargs: FirstLegalGenerator(),
+    )
+
+    assert cli.main(
+        [
+            "--profile",
+            "configs/elo/qwen3-0.6b-elo-smoke.toml",
+            "--base-model-only",
+            "--openings",
+            "data/elo/openings-v1.jsonl",
+            "--report",
+            str(report),
+            "--journal",
+            str(tmp_path / "base-games.jsonl"),
+            "--pgn",
+            str(tmp_path / "base-games.pgn"),
+        ]
+    ) == 0
+
+    value = json.loads(report.read_text(encoding="utf-8"))
+    assert value["settings"]["model_source"] == "base"
+    assert value["settings"]["adapter_sha256"] is None
+    assert len(value["games"]) == 4

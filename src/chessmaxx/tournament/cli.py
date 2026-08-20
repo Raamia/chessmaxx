@@ -63,7 +63,9 @@ def _git_commit() -> str | None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="chessmaxx-elo")
     parser.add_argument("--profile", type=Path, required=True)
-    parser.add_argument("--adapter-dir", type=Path, required=True)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--adapter-dir", type=Path)
+    source.add_argument("--base-model-only", action="store_true")
     parser.add_argument("--openings", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--journal", type=Path, required=True)
@@ -80,7 +82,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     profile = load_elo_profile(args.profile)
     selection = args.selection or profile.selection
-    adapter_dir = args.adapter_dir.resolve()
+    adapter_dir = args.adapter_dir.resolve() if args.adapter_dir else None
     openings = load_openings(args.openings)
     schedules = paired_schedule(
         model_id=profile.model_player_id,
@@ -90,21 +92,37 @@ def main(argv: list[str] | None = None) -> int:
         seed=profile.seed,
     )
     if selection == "legal-rerank":
-        model = HuggingFaceLegalMoveRanker.from_adapter(
-            adapter_dir,
-            base_model_name=profile.model_id,
-            revision=profile.revision,
-            device=args.device,
-            candidate_batch_size=profile.candidate_batch_size,
-        )
+        if adapter_dir is None:
+            model = HuggingFaceLegalMoveRanker.from_pretrained(
+                profile.model_id,
+                revision=profile.revision,
+                device=args.device,
+                candidate_batch_size=profile.candidate_batch_size,
+            )
+        else:
+            model = HuggingFaceLegalMoveRanker.from_adapter(
+                adapter_dir,
+                base_model_name=profile.model_id,
+                revision=profile.revision,
+                device=args.device,
+                candidate_batch_size=profile.candidate_batch_size,
+            )
     else:
-        model = HuggingFaceMoveGenerator.from_adapter(
-            adapter_dir,
-            base_model_name=profile.model_id,
-            revision=profile.revision,
-            device=args.device,
-            max_new_tokens=8,
-        )
+        if adapter_dir is None:
+            model = HuggingFaceMoveGenerator.from_pretrained(
+                profile.model_id,
+                revision=profile.revision,
+                device=args.device,
+                max_new_tokens=8,
+            )
+        else:
+            model = HuggingFaceMoveGenerator.from_adapter(
+                adapter_dir,
+                base_model_name=profile.model_id,
+                revision=profile.revision,
+                device=args.device,
+                max_new_tokens=8,
+            )
     generators = {profile.model_player_id: model}
     closeable: list[StockfishMoveGenerator] = []
     try:
@@ -136,7 +154,10 @@ def main(argv: list[str] | None = None) -> int:
             "profile": asdict(profile),
             "profile_sha256": _sha256(args.profile),
             "openings_sha256": _sha256(args.openings),
-            "adapter_sha256": _tree_sha256(adapter_dir),
+            "model_source": "base" if adapter_dir is None else "adapter",
+            "adapter_sha256": (
+                _tree_sha256(adapter_dir) if adapter_dir is not None else None
+            ),
             "selection": selection,
             "batch_size": profile.batch_size,
             "max_plies": profile.max_plies,
