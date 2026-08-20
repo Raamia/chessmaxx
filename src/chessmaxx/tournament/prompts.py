@@ -20,10 +20,11 @@ def build_retry_prompt(
     attempts: tuple[MoveAttempt, ...],
     *,
     include_legal_moves: bool = False,
+    move_history: str | None = None,
 ) -> str:
     """Repeat the unchanged board and explain rejected attempts."""
 
-    if not attempts and not include_legal_moves:
+    if not attempts and not include_legal_moves and not move_history:
         return build_prompt(fen)
     board = chess.Board(fen)
     if not board.is_valid() or board.is_game_over():
@@ -44,5 +45,15 @@ def build_retry_prompt(
     if include_legal_moves:
         legal_moves = " ".join(sorted(move.uci() for move in board.legal_moves))
         lines.append(f"Legal moves: {legal_moves}")
+    if move_history:
+        lines.append(f"Moves played since the frozen opening: {move_history}")
     lines.extend((f"FEN: {fen}", "Move:"))
     return "\n".join(lines)
+
+
+def san_history(board: chess.Board) -> str | None:
+    """Render moves played after the scheduled opening without changing the board."""
+
+    if not board.move_stack:
+        return None
+    return board.root().variation_san(board.move_stack)

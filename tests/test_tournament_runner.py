@@ -43,6 +43,18 @@ class RetryGenerator(FirstLegalGenerator):
         return [GeneratedMove(move, latency_ms=0.1) for _ in prompts]
 
 
+class HistoryGenerator(FirstLegalGenerator):
+    def __init__(self):
+        super().__init__()
+        self.prompts = []
+
+    def generate_prompts(self, prompts):
+        self.prompts.extend(prompts)
+        self.positions += len(prompts)
+        moves = ("e2e4", "a2a3")
+        return [GeneratedMove(moves[len(self.prompts) - 1], latency_ms=0.1)]
+
+
 def schedules(count):
     return [
         ScheduledGame(
@@ -109,3 +121,21 @@ def test_runner_batches_retry_feedback_across_games():
     assert all("Legal moves:" in prompt for prompt in model.prompt_batches[1])
     assert all(len(result.moves[0].attempts) == 2 for result in results)
     assert all(result.termination == "max_plies" for result in results)
+
+
+def test_runner_can_add_history_without_enabling_retries():
+    model = HistoryGenerator()
+    opponent = FirstLegalGenerator()
+    runner = TournamentRunner(
+        {"model": model, "opponent": opponent},
+        batch_size=1,
+        max_plies=3,
+        assisted_player_id="model",
+        include_move_history=True,
+    )
+
+    result = runner.run(schedules(1))[0]
+
+    assert "Moves played" not in model.prompts[0]
+    assert "Moves played since the frozen opening: 1. e4 a5" in model.prompts[1]
+    assert result.termination == "max_plies"

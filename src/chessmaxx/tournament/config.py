@@ -49,6 +49,7 @@ class EloProfile:
     seed: int
     opponents: tuple[OpponentProfile, ...]
     max_attempts: int = 1
+    context: str = "fen"
 
     def __post_init__(self) -> None:
         if not self.name.strip() or not self.model_id.strip():
@@ -69,6 +70,8 @@ class EloProfile:
             raise ValueError("retry modes require at least two move attempts")
         if not retrying and self.max_attempts != 1:
             raise ValueError("only retry modes may configure multiple attempts")
+        if self.context not in {"fen", "fen-pgn"}:
+            raise ValueError("Elo context must be fen or fen-pgn")
         ids = [opponent.player_id for opponent in self.opponents]
         if not ids or len(ids) != len(set(ids)) or self.model_player_id in ids:
             raise ValueError("Elo profile requires unique opponent IDs")

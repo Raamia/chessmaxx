@@ -24,8 +24,11 @@ def test_checked_in_elo_profile_has_balanced_ladder():
     assert profile.opponents[-1].rating == 1320
     assert len(openings) == 8
 
-    assisted = replace(profile, selection="retry", max_attempts=3)
+    assisted = replace(
+        profile, selection="retry", max_attempts=3, context="fen-pgn"
+    )
     assert assisted.max_attempts == 3
+    assert assisted.context == "fen-pgn"
 
 
 def completed_game(game_id, opponent, model_white, model_move):

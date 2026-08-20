@@ -1,7 +1,7 @@
 import chess
 
 from chessmaxx.evaluation.model import build_prompt
-from chessmaxx.tournament.prompts import build_retry_prompt
+from chessmaxx.tournament.prompts import build_retry_prompt, san_history
 from chessmaxx.tournament.schema import MoveAttempt
 
 
@@ -34,3 +34,16 @@ def test_retry_prompt_explains_failure_and_can_reveal_legal_moves():
     assert "Try again from the unchanged position" in prompt
     assert "Legal moves:" in prompt
     assert "e2e4" in prompt
+
+
+def test_prompt_can_include_actual_game_history():
+    board = chess.Board()
+    board.push_uci("e2e4")
+    board.push_uci("e7e5")
+    history = san_history(board)
+
+    prompt = build_retry_prompt(board.fen(), (), move_history=history)
+
+    assert history == "1. e4 e5"
+    assert "Moves played since the frozen opening: 1. e4 e5" in prompt
+    assert board.fen() in prompt
