@@ -72,7 +72,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pgn", type=Path, required=True)
     parser.add_argument("--stockfish", type=Path)
     parser.add_argument("--device")
-    parser.add_argument("--selection", choices=("greedy", "legal-rerank"))
+    parser.add_argument(
+        "--selection",
+        choices=("greedy", "retry", "retry-with-legal-list", "legal-rerank"),
+    )
+    parser.add_argument("--context", choices=("fen", "fen-pgn"))
+    parser.add_argument("--max-attempts", type=int)
     parser.add_argument("--threads", type=int, default=1)
     parser.add_argument("--hash-mb", type=int, default=64)
     return parser
@@ -82,6 +87,18 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     profile = load_elo_profile(args.profile)
     selection = args.selection or profile.selection
+    context = args.context or profile.context
+    retrying = selection in {"retry", "retry-with-legal-list"}
+    configured_attempts = (
+        args.max_attempts
+        if args.max_attempts is not None
+        else profile.max_attempts
+    )
+    max_attempts = configured_attempts if retrying else 1
+    if max_attempts <= 0 or (retrying and max_attempts < 2):
+        raise ValueError("retry modes require at least two move attempts")
+    if args.max_attempts is not None and not retrying:
+        raise ValueError("--max-attempts requires a retry selection mode")
     adapter_dir = args.adapter_dir.resolve() if args.adapter_dir else None
     openings = load_openings(args.openings)
     schedules = paired_schedule(
@@ -159,6 +176,8 @@ def main(argv: list[str] | None = None) -> int:
                 _tree_sha256(adapter_dir) if adapter_dir is not None else None
             ),
             "selection": selection,
+            "context": context,
+            "max_attempts": max_attempts,
             "batch_size": profile.batch_size,
             "max_plies": profile.max_plies,
         }
@@ -187,6 +206,14 @@ def main(argv: list[str] | None = None) -> int:
             generators,
             batch_size=profile.batch_size,
             max_plies=profile.max_plies,
+            assisted_player_id=(
+                profile.model_player_id
+                if retrying or context == "fen-pgn"
+                else None
+            ),
+            max_attempts=max_attempts,
+            include_legal_moves=selection == "retry-with-legal-list",
+            include_move_history=context == "fen-pgn",
             on_result=journal.append,
         )
         generated = runner.run(pending)

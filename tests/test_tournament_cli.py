@@ -26,6 +26,17 @@ class FirstLegalGenerator:
             for fen in fens
         ]
 
+    def generate_prompts(self, prompts):
+        fens = [
+            next(
+                line.removeprefix("FEN: ")
+                for line in prompt.splitlines()
+                if line.startswith("FEN: ")
+            )
+            for prompt in prompts
+        ]
+        return self.generate_many(fens)
+
 
 def test_elo_cli_runs_and_resumes_smoke_tournament(tmp_path, monkeypatch):
     adapter = tmp_path / "adapter"
@@ -96,3 +107,41 @@ def test_elo_cli_can_evaluate_the_pinned_base_model(tmp_path, monkeypatch):
     assert value["settings"]["model_source"] == "base"
     assert value["settings"]["adapter_sha256"] is None
     assert len(value["games"]) == 4
+
+
+def test_elo_cli_wires_retry_and_history_modes(tmp_path, monkeypatch):
+    adapter = tmp_path / "adapter"
+    adapter.mkdir()
+    (adapter / "adapter_config.json").write_text("{}", encoding="utf-8")
+    report = tmp_path / "assisted-report.json"
+    monkeypatch.setattr(
+        cli.HuggingFaceMoveGenerator,
+        "from_adapter",
+        lambda *args, **kwargs: FirstLegalGenerator(),
+    )
+
+    assert cli.main(
+        [
+            "--profile",
+            "configs/elo/qwen3-0.6b-assisted-smoke.toml",
+            "--adapter-dir",
+            str(adapter),
+            "--openings",
+            "data/elo/openings-v1.jsonl",
+            "--selection",
+            "retry-with-legal-list",
+            "--context",
+            "fen-pgn",
+            "--report",
+            str(report),
+            "--journal",
+            str(tmp_path / "assisted-games.jsonl"),
+            "--pgn",
+            str(tmp_path / "assisted-games.pgn"),
+        ]
+    ) == 0
+
+    settings = json.loads(report.read_text(encoding="utf-8"))["settings"]
+    assert settings["selection"] == "retry-with-legal-list"
+    assert settings["context"] == "fen-pgn"
+    assert settings["max_attempts"] == 3

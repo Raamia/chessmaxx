@@ -1,0 +1,21 @@
+[elo]
+name = "qwen3-0.6b-assisted-smoke"
+model_id = "Qwen/Qwen3-0.6B-Base"
+revision = "da87bfb608c14b7cf20ba1ce41287e8de496c0cd"
+model_player_id = "chessmaxx"
+selection = "retry"
+context = "fen"
+max_attempts = 3
+games_per_opponent = 2
+max_plies = 40
+batch_size = 2
+candidate_batch_size = 8
+seed = 2026
+
+[[elo.opponents]]
+player_id = "random"
+kind = "random"
+
+[[elo.opponents]]
+player_id = "material"
+kind = "material"
