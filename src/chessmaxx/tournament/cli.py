@@ -239,6 +239,7 @@ def main(argv: list[str] | None = None) -> int:
                 results,
                 model_id=profile.model_player_id,
                 opponent_ratings=opponent_ratings,
+                selection=selection,
             ),
             "games": [result.to_dict() for result in results],
         }
