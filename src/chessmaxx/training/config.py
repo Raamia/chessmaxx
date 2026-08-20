@@ -60,6 +60,10 @@ class TinySFTProfile:
             raise ValueError(
                 "chunked_exact policy loss requires the multi-PV policy objective"
             )
+        if self.policy_loss_backend == "chunked_exact" and self.method != "lora":
+            raise ValueError(
+                "chunked_exact policy loss requires LoRA with a frozen output head"
+            )
         if self.dtype not in {"float16", "bfloat16", "float32"}:
             raise ValueError("dtype must be float16, bfloat16, or float32")
         if self.isolate_packed_attention and not self.packing:

@@ -214,3 +214,45 @@ def test_chunked_target_log_probabilities_match_dense_softmax(chunk_size):
 
     assert actual.dtype == torch.float32
     assert actual.tolist() == pytest.approx(expected.tolist(), abs=1e-6)
+
+
+@pytest.mark.parametrize("chunk_size", [2, 5, 11])
+def test_chunked_target_log_probability_gradient_matches_dense(chunk_size):
+    torch.manual_seed(11)
+    dense_hidden = torch.randn((6, 5), requires_grad=True)
+    chunked_hidden = dense_hidden.detach().clone().requires_grad_(True)
+    weight = torch.randn((11, 5))
+    bias = torch.randn(11)
+    targets = torch.tensor([0, 10, 3, 6, 2, 8])
+    upstream = torch.randn(6)
+
+    dense = torch.nn.functional.log_softmax(
+        torch.nn.functional.linear(dense_hidden, weight, bias), dim=-1
+    ).gather(-1, targets.unsqueeze(-1)).squeeze(-1)
+    chunked = chunked_target_log_probabilities(
+        chunked_hidden,
+        weight,
+        targets,
+        bias=bias,
+        chunk_size=chunk_size,
+    )
+    (dense * upstream).sum().backward()
+    (chunked * upstream).sum().backward()
+
+    assert chunked.tolist() == pytest.approx(dense.tolist(), abs=1e-6)
+    torch.testing.assert_close(
+        chunked_hidden.grad,
+        dense_hidden.grad,
+        atol=1e-5,
+        rtol=1e-5,
+    )
+
+
+def test_chunked_target_log_probability_rejects_trainable_output_head():
+    with pytest.raises(ValueError, match="frozen vocabulary projection"):
+        chunked_target_log_probabilities(
+            torch.randn((2, 3), requires_grad=True),
+            torch.randn((5, 3), requires_grad=True),
+            torch.tensor([0, 1]),
+            chunk_size=2,
+        )

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any
 
 
@@ -51,10 +52,27 @@ def chunked_target_log_probabilities(
 
     try:
         import torch
-        import torch.nn.functional as functional
     except ImportError as exc:
         raise RuntimeError("chunked exact loss requires PyTorch") from exc
     _validate_projection_inputs(hidden_states, weight, targets, bias, chunk_size)
+    if weight.requires_grad or (bias is not None and bias.requires_grad):
+        raise ValueError(
+            "chunked exact loss requires a frozen vocabulary projection"
+        )
+    function = _chunked_target_log_probability_function()
+    return function.apply(hidden_states, weight, targets, bias, chunk_size)
+
+
+def _chunked_target_log_probability_forward(
+    hidden_states: Any,
+    weight: Any,
+    targets: Any,
+    bias: Any | None,
+    chunk_size: int,
+) -> tuple[Any, Any]:
+    import torch
+    import torch.nn.functional as functional
+
     log_normalizer = None
     for start in range(0, weight.shape[0], chunk_size):
         stop = min(start + chunk_size, weight.shape[0])
@@ -72,7 +90,80 @@ def chunked_target_log_probabilities(
     target_logits = (hidden_states * target_weights).sum(dim=-1).float()
     if bias is not None:
         target_logits = target_logits + bias.index_select(0, targets).float()
-    return target_logits - log_normalizer
+    return target_logits - log_normalizer, log_normalizer
+
+
+@lru_cache(maxsize=1)
+def _chunked_target_log_probability_function() -> Any:
+    import torch
+    import torch.nn.functional as functional
+
+    class ChunkedTargetLogProbability(torch.autograd.Function):
+        @staticmethod
+        def forward(
+            ctx: Any,
+            hidden_states: Any,
+            weight: Any,
+            targets: Any,
+            bias: Any | None,
+            chunk_size: int,
+        ) -> Any:
+            log_probabilities, log_normalizer = (
+                _chunked_target_log_probability_forward(
+                    hidden_states,
+                    weight,
+                    targets,
+                    bias,
+                    chunk_size,
+                )
+            )
+            saved_bias = (
+                bias
+                if bias is not None
+                else hidden_states.new_empty((0,))
+            )
+            ctx.save_for_backward(
+                hidden_states,
+                weight,
+                targets,
+                log_normalizer,
+                saved_bias,
+            )
+            ctx.has_bias = bias is not None
+            ctx.chunk_size = chunk_size
+            return log_probabilities
+
+        @staticmethod
+        def backward(ctx: Any, grad_output: Any) -> tuple[Any, ...]:
+            hidden_states, weight, targets, log_normalizer, saved_bias = (
+                ctx.saved_tensors
+            )
+            bias = saved_bias if ctx.has_bias else None
+            expected_weight = torch.zeros_like(
+                hidden_states, dtype=torch.float32
+            )
+            for start in range(0, weight.shape[0], ctx.chunk_size):
+                stop = min(start + ctx.chunk_size, weight.shape[0])
+                chunk_bias = bias[start:stop] if bias is not None else None
+                chunk_logits = functional.linear(
+                    hidden_states,
+                    weight[start:stop],
+                    chunk_bias,
+                ).float()
+                probabilities = torch.exp(
+                    chunk_logits - log_normalizer.unsqueeze(-1)
+                )
+                expected_weight.add_(
+                    probabilities @ weight[start:stop].float()
+                )
+            target_weight = weight.index_select(0, targets).float()
+            grad_hidden = (
+                grad_output.float().unsqueeze(-1)
+                * (target_weight - expected_weight)
+            )
+            return grad_hidden.to(hidden_states.dtype), None, None, None, None
+
+    return ChunkedTargetLogProbability
 
 
 def causal_hidden_and_projection(

@@ -149,3 +149,15 @@ def test_rejects_unknown_policy_loss_backend(backend):
             packing=False,
             policy_loss_backend=backend,
         )
+
+
+def test_chunked_policy_backend_requires_frozen_lora_output_head():
+    with pytest.raises(ValueError, match="frozen output head"):
+        TinySFTProfile(
+            name="bad",
+            model_id="model",
+            method="full",
+            objective="multipv_policy",
+            packing=False,
+            policy_loss_backend="chunked_exact",
+        )
