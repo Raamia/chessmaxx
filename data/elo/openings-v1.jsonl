@@ -1,0 +1,8 @@
+{"opening_id":"start","moves_uci":[]}
+{"opening_id":"open-e4-e5","moves_uci":["e2e4","e7e5"]}
+{"opening_id":"open-e4-c5","moves_uci":["e2e4","c7c5"]}
+{"opening_id":"open-d4-d5","moves_uci":["d2d4","d7d5"]}
+{"opening_id":"open-d4-nf6","moves_uci":["d2d4","g8f6"]}
+{"opening_id":"open-c4-e5","moves_uci":["c2c4","e7e5"]}
+{"opening_id":"open-c4-c5","moves_uci":["c2c4","c7c5"]}
+{"opening_id":"open-nf3-d5","moves_uci":["g1f3","d7d5"]}

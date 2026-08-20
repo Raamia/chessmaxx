@@ -1,0 +1,27 @@
+[elo]
+name = "qwen3-0.6b-elo-v1"
+model_id = "Qwen/Qwen3-0.6B-Base"
+revision = "da87bfb608c14b7cf20ba1ce41287e8de496c0cd"
+model_player_id = "chessmaxx"
+selection = "legal-rerank"
+games_per_opponent = 20
+max_plies = 240
+batch_size = 8
+candidate_batch_size = 16
+seed = 2026
+
+[[elo.opponents]]
+player_id = "random"
+kind = "random"
+
+[[elo.opponents]]
+player_id = "material"
+kind = "material"
+
+[[elo.opponents]]
+player_id = "stockfish-1320"
+kind = "stockfish"
+rating = 1320
+uci_elo = 1320
+move_time_ms = 100
+
