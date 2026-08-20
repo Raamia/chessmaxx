@@ -192,6 +192,69 @@ def test_adapter_cli_evaluates_labelled_validation_split(
     assert report["settings"]["adapter_sha256"]
 
 
+def test_adapter_cli_can_select_legal_move_reranking(
+    tmp_path, monkeypatch
+):
+    dataset = tmp_path / "training.jsonl"
+    adapter = tmp_path / "adapter"
+    output = tmp_path / "report.json"
+    adapter.mkdir()
+    (adapter / "adapter_config.json").write_text("{}", encoding="utf-8")
+    write_training_examples(
+        dataset,
+        [
+            TrainingExample(
+                example_id="validation-1",
+                game_id="game-1",
+                ply=0,
+                fen=chess.STARTING_FEN,
+                target_move="e2e4",
+                teacher_moves=(TeacherMove("e2e4", 20),),
+                split="validation",
+                source="fixture.pgn",
+            )
+        ],
+    )
+    loaded = {}
+
+    def load_ranker(path, **kwargs):
+        loaded.update({"path": path, **kwargs})
+        return FakeGenerator()
+
+    monkeypatch.setattr(
+        cli.HuggingFaceLegalMoveRanker, "from_adapter", load_ranker
+    )
+    monkeypatch.setattr(
+        cli.StockfishAnalyzer,
+        "open",
+        lambda *args, **kwargs: FakeAnalyzer(),
+    )
+
+    assert (
+        cli.main(
+            [
+                "adapter",
+                "--training-profile",
+                "configs/train/scaled-distill-qwen3-0.6b.toml",
+                "--adapter-dir",
+                str(adapter),
+                "--dataset",
+                str(dataset),
+                "--output",
+                str(output),
+                "--selection",
+                "legal-rerank",
+                "--candidate-batch-size",
+                "4",
+            ]
+        )
+        == 0
+    )
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert loaded["candidate_batch_size"] == 4
+    assert report["settings"]["selection"] == "legal-rerank"
+
+
 def test_labelled_base_cli_uses_the_same_validation_split(
     tmp_path, monkeypatch
 ):

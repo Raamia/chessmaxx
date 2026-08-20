@@ -405,3 +405,153 @@ class HuggingFaceMoveGenerator:
         self._oom_retries += 1
         if self.device.startswith("cuda"):
             self._torch.cuda.empty_cache()
+
+
+class HuggingFaceLegalMoveRanker(HuggingFaceMoveGenerator):
+    """Choose the highest-likelihood move from the board's legal move set."""
+
+    def __init__(self, *args: Any, candidate_batch_size: int = 16, **kwargs: Any) -> None:
+        if candidate_batch_size <= 0:
+            raise ValueError("candidate_batch_size must be positive")
+        self.candidate_batch_size = candidate_batch_size
+        super().__init__(*args, **kwargs)
+
+    @classmethod
+    def from_adapter(
+        cls,
+        adapter_path: str | Path,
+        *,
+        base_model_name: str,
+        revision: str,
+        device: str | None = None,
+        dtype: str = "auto",
+        candidate_batch_size: int = 16,
+    ) -> "HuggingFaceLegalMoveRanker":
+        loaded = HuggingFaceMoveGenerator.from_adapter(
+            adapter_path,
+            base_model_name=base_model_name,
+            revision=revision,
+            device=device,
+            dtype=dtype,
+            max_new_tokens=8,
+        )
+        return cls(
+            loaded.model,
+            loaded.tokenizer,
+            loaded.model_name,
+            loaded.device,
+            max_new_tokens=8,
+            revision=loaded.revision,
+            transformers_version=loaded.transformers_version,
+            identity_overrides={
+                **loaded.identity_overrides,
+                "selection_mode": "legal_move_likelihood_rerank",
+            },
+            candidate_batch_size=candidate_batch_size,
+        )
+
+    def reset_telemetry(self) -> None:
+        super().reset_telemetry()
+        self._candidate_sequences_scored = 0
+        self._candidate_input_tokens = 0
+        self._candidate_batch_attempts: list[int] = []
+
+    @property
+    def telemetry(self) -> dict[str, Any]:
+        return {
+            **super().telemetry,
+            "candidate_sequences_scored": self._candidate_sequences_scored,
+            "candidate_input_tokens": self._candidate_input_tokens,
+            "candidate_batch_attempts": list(self._candidate_batch_attempts),
+        }
+
+    @property
+    def metadata(self) -> dict[str, Any]:
+        return {
+            **super().metadata,
+            "candidate_batch_size": self.candidate_batch_size,
+        }
+
+    def generate_many(self, fens: list[str]) -> list[GeneratedMove]:
+        return [self._rank_legal_moves(fen) for fen in fens]
+
+    def _rank_legal_moves(self, fen: str) -> GeneratedMove:
+        import chess
+
+        board = chess.Board(fen)
+        moves = sorted(move.uci() for move in board.legal_moves)
+        if not moves:
+            raise ValueError("cannot rank moves for a terminal position")
+        started = time.perf_counter()
+        scores: list[float] = []
+        selected_output_tokens = 0
+        prompt_ids = self.tokenizer.encode(build_prompt(fen), add_special_tokens=True)
+        for start in range(0, len(moves), self.candidate_batch_size):
+            candidates = moves[start : start + self.candidate_batch_size]
+            self._candidate_batch_attempts.append(len(candidates))
+            rows: list[list[int]] = []
+            response_starts: list[int] = []
+            response_lengths: list[int] = []
+            for move in candidates:
+                target_ids = self.tokenizer.encode(
+                    f" {move}", add_special_tokens=False
+                ) + [self.tokenizer.eos_token_id]
+                rows.append([*prompt_ids, *target_ids])
+                response_starts.append(len(prompt_ids))
+                response_lengths.append(len(target_ids))
+            width = max(len(row) for row in rows)
+            input_ids = [
+                row + [self.tokenizer.pad_token_id] * (width - len(row))
+                for row in rows
+            ]
+            attention_mask = [
+                [1] * len(row) + [0] * (width - len(row)) for row in rows
+            ]
+            input_tensor = self._torch.tensor(
+                input_ids, dtype=self._torch.long, device=self.device
+            )
+            attention_tensor = self._torch.tensor(
+                attention_mask, dtype=self._torch.long, device=self.device
+            )
+            self._synchronize()
+            with self._torch.inference_mode():
+                logits = self.model(
+                    input_ids=input_tensor,
+                    attention_mask=attention_tensor,
+                    use_cache=False,
+                ).logits
+                log_probabilities = self._torch.nn.functional.log_softmax(
+                    logits[:, :-1, :].float(), dim=-1
+                )
+            self._synchronize()
+            for row_index, (response_start, response_length) in enumerate(
+                zip(response_starts, response_lengths, strict=True)
+            ):
+                targets = input_tensor[
+                    row_index,
+                    response_start : response_start + response_length,
+                ]
+                token_scores = log_probabilities[
+                    row_index,
+                    response_start - 1 : response_start + response_length - 1,
+                ].gather(-1, targets.unsqueeze(-1)).squeeze(-1)
+                scores.append(float(token_scores.sum().item()))
+            self._candidate_sequences_scored += len(candidates)
+            self._candidate_input_tokens += sum(map(sum, attention_mask))
+        best_index = max(range(len(moves)), key=lambda index: scores[index])
+        selected_output_tokens = len(
+            self.tokenizer.encode(f" {moves[best_index]}", add_special_tokens=False)
+        )
+        elapsed = time.perf_counter() - started
+        self._generation_seconds += elapsed
+        self._positions_generated += 1
+        self._prompt_tokens += len(prompt_ids)
+        self._output_tokens += selected_output_tokens
+        self._batch_attempts.append(1)
+        self._successful_batch_sizes.append(1)
+        return GeneratedMove(
+            raw_output=moves[best_index],
+            latency_ms=elapsed * 1000,
+            prompt_tokens=len(prompt_ids),
+            output_tokens=selected_output_tokens,
+        )
