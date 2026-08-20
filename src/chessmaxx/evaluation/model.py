@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Protocol, TypeVar
 
+from chessmaxx.training.sparse_loss import chunked_target_log_probabilities
+
 
 InputT = TypeVar("InputT")
 OutputT = TypeVar("OutputT")
@@ -14,6 +16,52 @@ OutputT = TypeVar("OutputT")
 
 class GenerationOOMError(RuntimeError):
     """Raised when even one position cannot fit in accelerator memory."""
+
+
+def chunked_response_log_likelihoods(
+    hidden_states: Any,
+    input_ids: Any,
+    response_starts: list[int],
+    response_lengths: list[int],
+    weight: Any,
+    *,
+    bias: Any | None = None,
+    vocabulary_chunk_size: int,
+) -> Any:
+    """Score response spans exactly without materializing dense vocabulary logits."""
+
+    try:
+        import torch
+    except ImportError as exc:
+        raise RuntimeError("chunked response scoring requires PyTorch") from exc
+    if hidden_states.ndim != 3 or input_ids.ndim != 2:
+        raise ValueError("expected hidden [B,L,H] and input IDs [B,L]")
+    if hidden_states.shape[:2] != input_ids.shape:
+        raise ValueError("hidden states and input IDs have different dimensions")
+    rows = hidden_states.shape[0]
+    if len(response_starts) != rows or len(response_lengths) != rows:
+        raise ValueError("response spans must match the scoring batch")
+    span_hidden: list[Any] = []
+    span_targets: list[Any] = []
+    for row, (start, length) in enumerate(
+        zip(response_starts, response_lengths, strict=True)
+    ):
+        if start <= 0 or length <= 0 or start + length > input_ids.shape[1]:
+            raise ValueError("response span is outside the candidate sequence")
+        span_hidden.append(hidden_states[row, start - 1 : start + length - 1])
+        span_targets.append(input_ids[row, start : start + length])
+    flat_hidden = torch.cat(span_hidden, dim=0)
+    flat_targets = torch.cat(span_targets, dim=0)
+    token_scores = chunked_target_log_probabilities(
+        flat_hidden,
+        weight.detach(),
+        flat_targets,
+        bias=bias.detach() if bias is not None else None,
+        chunk_size=vocabulary_chunk_size,
+    )
+    return torch.stack(
+        [score.sum() for score in token_scores.split(response_lengths)]
+    )
 
 
 def adaptive_batch_call(

@@ -16,7 +16,10 @@ from chessmaxx.training.sparse_loss import (  # noqa: E402
     chunked_candidate_sequence_log_likelihoods,
     chunked_target_log_probabilities,
 )
-from chessmaxx.evaluation.model import HuggingFaceLegalMoveRanker  # noqa: E402
+from chessmaxx.evaluation.model import (  # noqa: E402
+    HuggingFaceLegalMoveRanker,
+    chunked_response_log_likelihoods,
+)
 import chess  # noqa: E402
 
 
@@ -32,6 +35,47 @@ def test_candidate_scores_sum_only_supervised_next_tokens():
     assert scores.tolist()[0] == pytest.approx(
         [-2 * math.log(5), -math.log(5)]
     )
+
+
+@pytest.mark.parametrize("chunk_size", [1, 3, 8])
+def test_chunked_response_scores_match_dense_sequence_scores(chunk_size):
+    torch.manual_seed(29)
+    hidden = torch.randn((2, 6, 4))
+    input_ids = torch.tensor(
+        [[1, 2, 3, 4, 5, 0], [1, 2, 6, 7, 8, 9]]
+    )
+    starts = [2, 3]
+    lengths = [3, 2]
+    weight = torch.randn((10, 4))
+    bias = torch.randn(10)
+    dense_log_probabilities = torch.nn.functional.log_softmax(
+        torch.nn.functional.linear(hidden, weight, bias).float(), dim=-1
+    )
+    expected = torch.stack(
+        [
+            dense_log_probabilities[row, start - 1 : start + length - 1]
+            .gather(
+                -1,
+                input_ids[row, start : start + length].unsqueeze(-1),
+            )
+            .sum()
+            for row, (start, length) in enumerate(
+                zip(starts, lengths, strict=True)
+            )
+        ]
+    )
+
+    actual = chunked_response_log_likelihoods(
+        hidden,
+        input_ids,
+        starts,
+        lengths,
+        weight,
+        bias=bias,
+        vocabulary_chunk_size=chunk_size,
+    )
+
+    torch.testing.assert_close(actual, expected)
 
 
 def test_policy_kl_is_zero_when_student_matches_teacher():
