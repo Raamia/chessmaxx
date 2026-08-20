@@ -13,6 +13,7 @@ from chessmaxx.training.config import TinySFTProfile  # noqa: E402
 from chessmaxx.training.train import _policy_trainer_class  # noqa: E402
 from chessmaxx.training.sparse_loss import (  # noqa: E402
     causal_hidden_and_projection,
+    chunked_candidate_sequence_log_likelihoods,
     chunked_target_log_probabilities,
 )
 from chessmaxx.evaluation.model import HuggingFaceLegalMoveRanker  # noqa: E402
@@ -256,3 +257,70 @@ def test_chunked_target_log_probability_rejects_trainable_output_head():
             torch.tensor([0, 1]),
             chunk_size=2,
         )
+
+
+def test_chunked_candidate_scores_and_policy_gradient_match_dense():
+    torch.manual_seed(19)
+    dense_hidden = torch.randn((2, 3, 5, 4), requires_grad=True)
+    chunked_hidden = dense_hidden.detach().clone().requires_grad_(True)
+    weight = torch.randn((9, 4))
+    bias = torch.randn(9)
+    labels = torch.tensor(
+        [
+            [
+                [-100, -100, 2, 3, 4],
+                [-100, -100, -100, 5, 6],
+                [-100, -100, -100, -100, -100],
+            ],
+            [
+                [-100, -100, 1, 2, 3],
+                [-100, -100, 4, 5, 6],
+                [-100, -100, -100, 7, 8],
+            ],
+        ]
+    )
+    teacher = torch.tensor([[0.7, 0.3, 0.0], [0.5, 0.3, 0.2]])
+    candidate_mask = torch.tensor(
+        [[True, True, False], [True, True, True]]
+    )
+    dense_logits = torch.nn.functional.linear(dense_hidden, weight, bias)
+    dense_scores, dense_counts = candidate_sequence_log_likelihoods(
+        dense_logits, labels
+    )
+    chunked_scores, chunked_counts = (
+        chunked_candidate_sequence_log_likelihoods(
+            chunked_hidden,
+            labels,
+            weight,
+            bias=bias,
+            chunk_size=4,
+        )
+    )
+    dense_result = dense_policy_objective(
+        dense_scores,
+        dense_counts,
+        teacher,
+        candidate_mask,
+        hard_loss_weight=0.5,
+        student_temperature=1.0,
+    )
+    chunked_result = dense_policy_objective(
+        chunked_scores,
+        chunked_counts,
+        teacher,
+        candidate_mask,
+        hard_loss_weight=0.5,
+        student_temperature=1.0,
+    )
+    dense_result["loss"].backward()
+    chunked_result["loss"].backward()
+
+    torch.testing.assert_close(chunked_scores, dense_scores)
+    torch.testing.assert_close(chunked_counts, dense_counts)
+    torch.testing.assert_close(chunked_result["loss"], dense_result["loss"])
+    torch.testing.assert_close(
+        chunked_hidden.grad,
+        dense_hidden.grad,
+        atol=1e-5,
+        rtol=1e-5,
+    )

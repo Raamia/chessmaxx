@@ -63,6 +63,43 @@ def chunked_target_log_probabilities(
     return function.apply(hidden_states, weight, targets, bias, chunk_size)
 
 
+def chunked_candidate_sequence_log_likelihoods(
+    hidden_states: Any,
+    labels: Any,
+    weight: Any,
+    *,
+    bias: Any | None = None,
+    chunk_size: int,
+) -> tuple[Any, Any]:
+    """Sum exact response-token log probabilities for grouped candidates."""
+
+    try:
+        import torch
+    except ImportError as exc:
+        raise RuntimeError("chunked exact loss requires PyTorch") from exc
+    if hidden_states.ndim != 4 or labels.ndim != 3:
+        raise ValueError("expected hidden [B,K,L,H] and labels [B,K,L]")
+    if hidden_states.shape[:3] != labels.shape:
+        raise ValueError("hidden-state and label dimensions do not match")
+    shifted_hidden = hidden_states[..., :-1, :]
+    shifted_labels = labels[..., 1:]
+    supervised = shifted_labels != -100
+    supervised_hidden = shifted_hidden[supervised]
+    targets = shifted_labels[supervised]
+    token_log_probabilities = chunked_target_log_probabilities(
+        supervised_hidden,
+        weight,
+        targets,
+        bias=bias,
+        chunk_size=chunk_size,
+    )
+    positioned_scores = torch.zeros_like(shifted_labels, dtype=torch.float32)
+    positioned_scores = positioned_scores.masked_scatter(
+        supervised, token_log_probabilities
+    )
+    return positioned_scores.sum(dim=-1), supervised.sum(dim=-1)
+
+
 def _chunked_target_log_probability_forward(
     hidden_states: Any,
     weight: Any,
