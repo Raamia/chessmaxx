@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -64,6 +65,32 @@ class ScheduledGame:
 
 
 @dataclass(frozen=True, slots=True)
+class MoveAttempt:
+    attempt: int
+    raw_output: str
+    move_uci: str | None
+    legal: bool
+    error: str | None
+    latency_ms: float
+    prompt_tokens: int | None = None
+    output_tokens: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.attempt <= 0 or self.latency_ms < 0:
+            raise ValueError("move attempt number must be positive and latency non-negative")
+        for name, value in (
+            ("prompt_tokens", self.prompt_tokens),
+            ("output_tokens", self.output_tokens),
+        ):
+            if value is not None and value < 0:
+                raise ValueError(f"move attempt {name} must be non-negative")
+        if self.legal and (self.move_uci is None or self.error is not None):
+            raise ValueError("legal move attempt requires UCI and no error")
+        if not self.legal and self.error is None:
+            raise ValueError("illegal move attempt requires an error")
+
+
+@dataclass(frozen=True, slots=True)
 class MoveRecord:
     ply: int
     fen_before: str
@@ -72,6 +99,7 @@ class MoveRecord:
     move_uci: str | None
     legal: bool
     latency_ms: float
+    attempts: tuple[MoveAttempt, ...] = ()
 
     def __post_init__(self) -> None:
         if self.ply < 0 or self.latency_ms < 0:
@@ -90,6 +118,44 @@ class MoveRecord:
                 raise ValueError("legal move record contains invalid UCI") from exc
             if move not in board.legal_moves:
                 raise ValueError("move marked legal is illegal for its FEN")
+        if self.attempts:
+            if any(
+                attempt.attempt != index
+                for index, attempt in enumerate(self.attempts, start=1)
+            ):
+                raise ValueError("move attempts must use contiguous one-based numbers")
+            if any(attempt.legal for attempt in self.attempts[:-1]):
+                raise ValueError("a legal attempt must finish the move")
+            final = self.attempts[-1]
+            if (final.raw_output, final.move_uci, final.legal) != (
+                self.raw_output,
+                self.move_uci,
+                self.legal,
+            ):
+                raise ValueError("final attempt must match the move record")
+            if not math.isclose(
+                self.latency_ms,
+                sum(attempt.latency_ms for attempt in self.attempts),
+            ):
+                raise ValueError("move latency must equal total attempt latency")
+            for attempt in self.attempts:
+                if attempt.legal:
+                    try:
+                        move = chess.Move.from_uci(attempt.move_uci or "")
+                    except ValueError as exc:
+                        raise ValueError(
+                            "legal move attempt contains invalid UCI"
+                        ) from exc
+                    if move not in board.legal_moves:
+                        raise ValueError("legal move attempt is illegal for its FEN")
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "MoveRecord":
+        restored = dict(value)
+        restored["attempts"] = tuple(
+            MoveAttempt(**attempt) for attempt in value.get("attempts", ())
+        )
+        return cls(**restored)
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,5 +205,5 @@ class GameResult:
             result=str(value["result"]),
             termination=str(value["termination"]),
             final_fen=str(value["final_fen"]),
-            moves=tuple(MoveRecord(**move) for move in value["moves"]),
+            moves=tuple(MoveRecord.from_dict(move) for move in value["moves"]),
         )
