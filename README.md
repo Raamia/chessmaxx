@@ -530,6 +530,8 @@ chessmaxx-elo-compare `
 
 Use `--context fen-pgn` for the memory ablation and separate artifacts for every condition. `chessmaxx-elo-compare` verifies matching schedules and opponent metadata before calculating adapter-minus-base deltas.
 
+Legal reranking uses the same exact chunked-vocabulary principle as the training loss. The evaluator runs the transformer body without its dense LM-head output, retains hidden states only for move-response tokens, and calculates the vocabulary log-normalizer in 4,096-token chunks. Reports include the dense full-logit estimate, actual chunk-tensor estimate, response hidden-state estimate, and theoretical reduction. This removes the full `[candidate batch, sequence, vocabulary]` FP32 log-probability allocation that produced recoverable allocator warnings on the 8 GB GPU.
+
 The positional test split used in Phase 6 is not reused for tournament tuning. Game results may select neither a new checkpoint nor new hyperparameters; future tuning requires a newly frozen evaluation ladder.
 
 ### Position format

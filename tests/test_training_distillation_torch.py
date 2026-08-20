@@ -288,6 +288,12 @@ def test_legal_move_ranker_selects_highest_likelihood_sequence():
     )[-1]
     assert ranker.telemetry["candidate_sequences_scored"] == 20
     assert ranker.metadata["candidate_scoring_backend"] == "chunked_exact"
+    estimates = ranker.telemetry["candidate_scoring_memory_estimates"]
+    assert ranker.telemetry["maximum_response_tokens_per_batch"] == 8
+    assert estimates["dense_fp32_log_probabilities_bytes"] > estimates[
+        "chunk_fp32_logits_bytes"
+    ]
+    assert estimates["theoretical_fp32_log_probability_reduction"] > 1
 
 
 def test_extracts_hidden_states_without_running_the_dense_lm_head():

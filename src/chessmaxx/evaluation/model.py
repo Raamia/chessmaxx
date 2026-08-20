@@ -558,6 +558,13 @@ class HuggingFaceLegalMoveRanker(HuggingFaceMoveGenerator):
         self._candidate_sequences_scored = 0
         self._candidate_input_tokens = 0
         self._candidate_batch_attempts: list[int] = []
+        self._maximum_candidate_width = 0
+        self._maximum_response_tokens_per_batch = 0
+        self._dense_dtype_logits_estimate = 0
+        self._dense_fp32_log_probabilities_estimate = 0
+        self._chunk_dtype_logits_estimate = 0
+        self._chunk_fp32_logits_estimate = 0
+        self._response_hidden_states_estimate = 0
 
     @property
     def telemetry(self) -> dict[str, Any]:
@@ -566,6 +573,31 @@ class HuggingFaceLegalMoveRanker(HuggingFaceMoveGenerator):
             "candidate_sequences_scored": self._candidate_sequences_scored,
             "candidate_input_tokens": self._candidate_input_tokens,
             "candidate_batch_attempts": list(self._candidate_batch_attempts),
+            "maximum_candidate_width": self._maximum_candidate_width,
+            "maximum_response_tokens_per_batch": (
+                self._maximum_response_tokens_per_batch
+            ),
+            "candidate_scoring_memory_estimates": {
+                "dense_model_dtype_logits_bytes": (
+                    self._dense_dtype_logits_estimate
+                ),
+                "dense_fp32_log_probabilities_bytes": (
+                    self._dense_fp32_log_probabilities_estimate
+                ),
+                "chunk_model_dtype_logits_bytes": (
+                    self._chunk_dtype_logits_estimate
+                ),
+                "chunk_fp32_logits_bytes": self._chunk_fp32_logits_estimate,
+                "response_hidden_states_bytes": (
+                    self._response_hidden_states_estimate
+                ),
+                "theoretical_fp32_log_probability_reduction": (
+                    self._dense_fp32_log_probabilities_estimate
+                    / self._chunk_fp32_logits_estimate
+                    if self._chunk_fp32_logits_estimate
+                    else None
+                ),
+            },
         }
 
     @property
@@ -633,6 +665,36 @@ class HuggingFaceLegalMoveRanker(HuggingFaceMoveGenerator):
                     projection.weight,
                     bias=projection.bias,
                     vocabulary_chunk_size=self.vocabulary_chunk_size,
+                )
+                response_tokens = sum(response_lengths)
+                vocabulary_size, hidden_size = projection.weight.shape
+                dtype_bytes = projection.weight.element_size()
+                chunk_width = min(self.vocabulary_chunk_size, vocabulary_size)
+                self._maximum_candidate_width = max(
+                    self._maximum_candidate_width, width
+                )
+                self._maximum_response_tokens_per_batch = max(
+                    self._maximum_response_tokens_per_batch, response_tokens
+                )
+                self._dense_dtype_logits_estimate = max(
+                    self._dense_dtype_logits_estimate,
+                    len(candidates) * width * vocabulary_size * dtype_bytes,
+                )
+                self._dense_fp32_log_probabilities_estimate = max(
+                    self._dense_fp32_log_probabilities_estimate,
+                    len(candidates) * (width - 1) * vocabulary_size * 4,
+                )
+                self._chunk_dtype_logits_estimate = max(
+                    self._chunk_dtype_logits_estimate,
+                    response_tokens * chunk_width * dtype_bytes,
+                )
+                self._chunk_fp32_logits_estimate = max(
+                    self._chunk_fp32_logits_estimate,
+                    response_tokens * chunk_width * 4,
+                )
+                self._response_hidden_states_estimate = max(
+                    self._response_hidden_states_estimate,
+                    response_tokens * hidden_size * dtype_bytes,
                 )
             self._synchronize()
             scores.extend(float(score) for score in batch_scores.tolist())
