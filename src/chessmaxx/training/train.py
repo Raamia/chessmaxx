@@ -525,6 +525,10 @@ def run_tiny_sft(
     tokens_seen = metrics.get("num_input_tokens_seen")
     if tokens_seen is None:
         tokens_seen = data_summary.input_tokens_per_epoch * profile.epochs
+    training_positions_seen = data_summary.selected_examples * profile.epochs
+    supervised_tokens_seen = (
+        data_summary.supervised_tokens_per_epoch * profile.epochs
+    )
     report: dict[str, Any] = {
         "schema_version": 1,
         "profile": asdict(profile),
@@ -549,8 +553,16 @@ def run_tiny_sft(
             "completed_epochs": metrics.get("epoch"),
             "input_tokens_seen": tokens_seen,
             "input_tokens_per_second": tokens_seen / wall_seconds,
-            "estimated_supervised_tokens_seen": (
-                data_summary.supervised_tokens_per_epoch * profile.epochs
+            "estimated_supervised_tokens_seen": supervised_tokens_seen,
+            "estimated_supervised_tokens_per_second": (
+                supervised_tokens_seen / wall_seconds
+            ),
+            "training_positions_seen": training_positions_seen,
+            "training_positions_per_second": (
+                training_positions_seen / wall_seconds
+            ),
+            "training_positions_per_hour": (
+                training_positions_seen * 3600 / wall_seconds
             ),
             "peak_allocated_vram_bytes": torch.cuda.max_memory_allocated(),
             "peak_reserved_vram_bytes": torch.cuda.max_memory_reserved(),

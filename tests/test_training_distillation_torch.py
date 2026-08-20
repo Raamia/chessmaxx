@@ -390,3 +390,22 @@ def test_chunked_candidate_scores_and_policy_gradient_match_dense():
         atol=1e-5,
         rtol=1e-5,
     )
+
+
+def test_chunked_target_probabilities_match_dense_bfloat16_projection():
+    torch.manual_seed(23)
+    hidden = torch.randn((7, 8), dtype=torch.bfloat16)
+    weight = torch.randn((31, 8), dtype=torch.bfloat16)
+    targets = torch.tensor([0, 30, 4, 9, 17, 22, 5])
+    expected = torch.nn.functional.log_softmax(
+        torch.nn.functional.linear(hidden, weight).float(), dim=-1
+    ).gather(-1, targets.unsqueeze(-1)).squeeze(-1)
+
+    actual = chunked_target_log_probabilities(
+        hidden,
+        weight,
+        targets,
+        chunk_size=7,
+    )
+
+    torch.testing.assert_close(actual, expected, atol=1e-5, rtol=1e-5)

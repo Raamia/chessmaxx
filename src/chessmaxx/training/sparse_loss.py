@@ -111,6 +111,9 @@ def _chunked_target_log_probability_forward(
     import torch.nn.functional as functional
 
     log_normalizer = None
+    target_logits = torch.empty(
+        targets.shape, dtype=torch.float32, device=hidden_states.device
+    )
     for start in range(0, weight.shape[0], chunk_size):
         stop = min(start + chunk_size, weight.shape[0])
         chunk_bias = bias[start:stop] if bias is not None else None
@@ -123,10 +126,10 @@ def _chunked_target_log_probability_forward(
             if log_normalizer is None
             else torch.logaddexp(log_normalizer, chunk_normalizer)
         )
-    target_weights = weight.index_select(0, targets)
-    target_logits = (hidden_states * target_weights).sum(dim=-1).float()
-    if bias is not None:
-        target_logits = target_logits + bias.index_select(0, targets).float()
+        target_rows = (targets >= start) & (targets < stop)
+        target_logits[target_rows] = chunk_logits[
+            target_rows, targets[target_rows] - start
+        ]
     return target_logits - log_normalizer, log_normalizer
 
 
