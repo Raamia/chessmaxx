@@ -88,6 +88,8 @@ def test_scaled_distillation_profile_is_a_dense_policy_control():
     assert profile.max_teacher_candidates == 3
     assert profile.teacher_temperature_cp == 100.0
     assert profile.hard_loss_weight == 0.5
+    assert profile.policy_loss_backend == "dense"
+    assert profile.vocabulary_chunk_size == 4096
 
 
 def test_rejects_unknown_training_setting():
@@ -126,3 +128,24 @@ def test_policy_objective_rejects_sequence_packing():
 
     with pytest.raises(ValueError, match="does not support packing"):
         replace(profile, objective="multipv_policy", packing=True)
+
+
+def test_chunked_policy_backend_requires_policy_objective():
+    profile = load_tiny_sft_profile(
+        "configs/train/tiny-sft-qwen3-0.6b-unpacked.toml"
+    )
+
+    with pytest.raises(ValueError, match="multi-PV policy objective"):
+        replace(profile, policy_loss_backend="chunked_exact")
+
+
+@pytest.mark.parametrize("backend", ["sparse", "triton"])
+def test_rejects_unknown_policy_loss_backend(backend):
+    with pytest.raises(ValueError, match="policy_loss_backend"):
+        TinySFTProfile(
+            name="bad",
+            model_id="model",
+            objective="multipv_policy",
+            packing=False,
+            policy_loss_backend=backend,
+        )

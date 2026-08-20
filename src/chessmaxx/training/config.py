@@ -42,6 +42,8 @@ class TinySFTProfile:
     max_teacher_candidates: int = 3
     hard_loss_weight: float = 0.5
     student_temperature: float = 1.0
+    policy_loss_backend: str = "dense"
+    vocabulary_chunk_size: int = 4096
 
     def __post_init__(self) -> None:
         if not self.name.strip() or not self.model_id.strip():
@@ -50,6 +52,14 @@ class TinySFTProfile:
             raise ValueError("method must be lora or full")
         if self.objective not in {"hard_sft", "multipv_policy"}:
             raise ValueError("objective must be hard_sft or multipv_policy")
+        if self.policy_loss_backend not in {"dense", "chunked_exact"}:
+            raise ValueError(
+                "policy_loss_backend must be dense or chunked_exact"
+            )
+        if self.objective != "multipv_policy" and self.policy_loss_backend != "dense":
+            raise ValueError(
+                "chunked_exact policy loss requires the multi-PV policy objective"
+            )
         if self.dtype not in {"float16", "bfloat16", "float32"}:
             raise ValueError("dtype must be float16, bfloat16, or float32")
         if self.isolate_packed_attention and not self.packing:
@@ -68,6 +78,7 @@ class TinySFTProfile:
             "lora_rank",
             "lora_alpha",
             "max_teacher_candidates",
+            "vocabulary_chunk_size",
         ):
             if getattr(self, field_name) <= 0:
                 raise ValueError(f"{field_name} must be positive")
