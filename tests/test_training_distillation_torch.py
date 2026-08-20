@@ -13,6 +13,7 @@ from chessmaxx.training.config import TinySFTProfile  # noqa: E402
 from chessmaxx.training.train import _policy_trainer_class  # noqa: E402
 from chessmaxx.training.sparse_loss import (  # noqa: E402
     causal_hidden_and_projection,
+    chunked_target_log_probabilities,
 )
 from chessmaxx.evaluation.model import HuggingFaceLegalMoveRanker  # noqa: E402
 import chess  # noqa: E402
@@ -190,3 +191,26 @@ def test_extracts_hidden_states_without_running_the_dense_lm_head():
     assert projection.hidden_states is expected_hidden
     assert projection.weight is output_head.weight
     assert projection.bias is None
+
+
+@pytest.mark.parametrize("chunk_size", [1, 3, 7, 16])
+def test_chunked_target_log_probabilities_match_dense_softmax(chunk_size):
+    torch.manual_seed(7)
+    hidden = torch.randn((5, 4))
+    weight = torch.randn((7, 4))
+    bias = torch.randn(7)
+    targets = torch.tensor([0, 6, 2, 4, 1])
+    expected = torch.nn.functional.log_softmax(
+        torch.nn.functional.linear(hidden, weight, bias).float(), dim=-1
+    ).gather(-1, targets.unsqueeze(-1)).squeeze(-1)
+
+    actual = chunked_target_log_probabilities(
+        hidden,
+        weight,
+        targets,
+        bias=bias,
+        chunk_size=chunk_size,
+    )
+
+    assert actual.dtype == torch.float32
+    assert actual.tolist() == pytest.approx(expected.tolist(), abs=1e-6)

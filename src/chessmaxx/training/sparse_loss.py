@@ -13,6 +13,68 @@ class CausalLMProjection:
     bias: Any | None
 
 
+def _validate_projection_inputs(
+    hidden_states: Any,
+    weight: Any,
+    targets: Any,
+    bias: Any | None,
+    chunk_size: int,
+) -> None:
+    if hidden_states.ndim != 2 or weight.ndim != 2 or targets.ndim != 1:
+        raise ValueError("expected hidden [N,H], weight [V,H], and targets [N]")
+    if hidden_states.shape[0] != targets.shape[0]:
+        raise ValueError("hidden states and targets have different token counts")
+    if hidden_states.shape[1] != weight.shape[1]:
+        raise ValueError("hidden states and vocabulary weights have different widths")
+    if weight.shape[0] <= 0:
+        raise ValueError("vocabulary projection must not be empty")
+    if bias is not None and bias.shape != weight.shape[:1]:
+        raise ValueError("vocabulary bias has the wrong shape")
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be positive")
+    if targets.numel() and (
+        int(targets.min().item()) < 0
+        or int(targets.max().item()) >= weight.shape[0]
+    ):
+        raise ValueError("target token is outside the vocabulary")
+
+
+def chunked_target_log_probabilities(
+    hidden_states: Any,
+    weight: Any,
+    targets: Any,
+    *,
+    bias: Any | None = None,
+    chunk_size: int,
+) -> Any:
+    """Calculate exact target log probabilities without dense vocabulary logits."""
+
+    try:
+        import torch
+        import torch.nn.functional as functional
+    except ImportError as exc:
+        raise RuntimeError("chunked exact loss requires PyTorch") from exc
+    _validate_projection_inputs(hidden_states, weight, targets, bias, chunk_size)
+    log_normalizer = None
+    for start in range(0, weight.shape[0], chunk_size):
+        stop = min(start + chunk_size, weight.shape[0])
+        chunk_bias = bias[start:stop] if bias is not None else None
+        chunk_logits = functional.linear(
+            hidden_states, weight[start:stop], chunk_bias
+        ).float()
+        chunk_normalizer = torch.logsumexp(chunk_logits, dim=-1)
+        log_normalizer = (
+            chunk_normalizer
+            if log_normalizer is None
+            else torch.logaddexp(log_normalizer, chunk_normalizer)
+        )
+    target_weights = weight.index_select(0, targets)
+    target_logits = (hidden_states * target_weights).sum(dim=-1).float()
+    if bias is not None:
+        target_logits = target_logits + bias.index_select(0, targets).float()
+    return target_logits - log_normalizer
+
+
 def causal_hidden_and_projection(
     model: Any,
     *,
