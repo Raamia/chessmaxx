@@ -3,16 +3,19 @@ from pathlib import Path
 import chess
 
 from chessmaxx.evaluation.schema import TeacherMove
+from chessmaxx.training.config import TinySFTProfile
+from chessmaxx.training.distillation import PolicyDatasetSummary
+from chessmaxx.training.packing import IsolatedPackedTokenDataset
 from chessmaxx.training.schema import TrainingExample
 from chessmaxx.training.train import (
     _warmup_arguments,
     extract_learning_curve,
+    policy_memory_estimates,
     prepare_policy_training_dataset,
     prepare_training_dataset,
     select_split_examples,
     select_training_examples,
 )
-from chessmaxx.training.packing import IsolatedPackedTokenDataset
 
 
 class FakeTokenizer:
@@ -136,6 +139,42 @@ def test_warmup_arguments_rejects_unknown_signature() -> None:
         assert "neither warmup_ratio nor warmup_steps" in str(exc)
     else:
         raise AssertionError("expected unsupported warmup arguments to fail")
+
+
+def test_policy_memory_estimates_compare_dense_batch_with_one_chunk():
+    profile = TinySFTProfile(
+        name="chunked",
+        model_id="model",
+        objective="multipv_policy",
+        packing=False,
+        per_device_batch_size=2,
+        max_teacher_candidates=3,
+        policy_loss_backend="chunked_exact",
+        vocabulary_chunk_size=40,
+    )
+    summary = PolicyDatasetSummary(
+        examples=10,
+        candidate_sequences=30,
+        mean_candidates_per_example=3.0,
+        mean_teacher_top1_probability=0.5,
+        mean_teacher_entropy=0.9,
+        maximum_candidate_length=96,
+        maximum_supervised_tokens_per_example=15,
+    )
+
+    estimates = policy_memory_estimates(
+        profile,
+        summary,
+        vocabulary_size=100,
+        hidden_size=8,
+        model_dtype_bytes=2,
+    )
+
+    assert estimates["dense_logits_bytes_per_longest_batch"] == 115_200
+    assert estimates["chunked_supervised_tokens_per_longest_batch"] == 30
+    assert estimates["chunked_float32_logits_bytes_per_chunk"] == 4_800
+    assert estimates["chunked_saved_hidden_bytes_per_longest_batch"] == 480
+    assert estimates["float32_logits_reduction_ratio"] == 48.0
 
 
 def test_learning_curve_merges_train_and_validation_logs_by_step() -> None:

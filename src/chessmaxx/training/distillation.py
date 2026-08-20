@@ -41,6 +41,7 @@ class PolicyDatasetSummary:
     mean_teacher_top1_probability: float
     mean_teacher_entropy: float
     maximum_candidate_length: int
+    maximum_supervised_tokens_per_example: int
 
 
 def centipawn_policy(
@@ -176,6 +177,10 @@ def summarize_policy_dataset(dataset: PolicyTokenDataset) -> PolicyDatasetSummar
             len(candidate.input_ids)
             for item in dataset.items
             for candidate in item.candidates
+        ),
+        maximum_supervised_tokens_per_example=max(
+            sum(candidate.supervised_tokens for candidate in item.candidates)
+            for item in dataset.items
         ),
     )
 

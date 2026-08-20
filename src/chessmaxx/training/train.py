@@ -202,6 +202,50 @@ def extract_learning_curve(
     return [points[step] for step in sorted(points)]
 
 
+def policy_memory_estimates(
+    profile: TinySFTProfile,
+    policy_summary: Any,
+    *,
+    vocabulary_size: int,
+    hidden_size: int,
+    model_dtype_bytes: int,
+) -> dict[str, int | float | str]:
+    """Compare the longest-batch dense allocation with one sparse chunk."""
+
+    if vocabulary_size <= 0 or hidden_size <= 0 or model_dtype_bytes <= 0:
+        raise ValueError("model dimensions and dtype size must be positive")
+    dense_elements = (
+        profile.per_device_batch_size
+        * profile.max_teacher_candidates
+        * policy_summary.maximum_candidate_length
+        * vocabulary_size
+    )
+    supervised_tokens = (
+        profile.per_device_batch_size
+        * policy_summary.maximum_supervised_tokens_per_example
+    )
+    chunk_width = min(profile.vocabulary_chunk_size, vocabulary_size)
+    chunk_elements = supervised_tokens * chunk_width
+    return {
+        "policy_loss_backend": profile.policy_loss_backend,
+        "vocabulary_chunk_size": profile.vocabulary_chunk_size,
+        "dense_logits_bytes_per_longest_batch": (
+            dense_elements * model_dtype_bytes
+        ),
+        "float32_loss_tensor_bytes_per_longest_batch": dense_elements * 4,
+        "chunked_supervised_tokens_per_longest_batch": supervised_tokens,
+        "chunked_logits_elements_per_chunk": chunk_elements,
+        "chunked_model_dtype_logits_bytes_per_chunk": (
+            chunk_elements * model_dtype_bytes
+        ),
+        "chunked_float32_logits_bytes_per_chunk": chunk_elements * 4,
+        "chunked_saved_hidden_bytes_per_longest_batch": (
+            supervised_tokens * hidden_size * model_dtype_bytes
+        ),
+        "float32_logits_reduction_ratio": dense_elements / chunk_elements,
+    }
+
+
 def _policy_trainer_class(transformers: Any, profile: TinySFTProfile) -> Any:
     class PolicyTrainer(transformers.Trainer):
         def compute_loss(
@@ -531,21 +575,18 @@ def run_tiny_sft(
         model_dtype_bytes = torch.empty(
             (), dtype=_dtype(torch, profile.dtype)
         ).element_size()
-        dense_elements = (
-            profile.per_device_batch_size
-            * profile.max_teacher_candidates
-            * policy_summary.maximum_candidate_length
-            * vocabulary_size
-        )
         report["distillation"] = {
             **asdict(policy_summary),
             "teacher_temperature_cp": profile.teacher_temperature_cp,
             "student_temperature": profile.student_temperature,
             "hard_loss_weight": profile.hard_loss_weight,
-            "dense_logits_bytes_per_longest_batch": (
-                dense_elements * model_dtype_bytes
+            **policy_memory_estimates(
+                profile,
+                policy_summary,
+                vocabulary_size=vocabulary_size,
+                hidden_size=int(getattr(model.config, "hidden_size", 0)),
+                model_dtype_bytes=model_dtype_bytes,
             ),
-            "float32_loss_tensor_bytes_per_longest_batch": dense_elements * 4,
         }
     (destination / "training-report.json").write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"

@@ -92,6 +92,33 @@ def test_scaled_distillation_profile_is_a_dense_policy_control():
     assert profile.vocabulary_chunk_size == 4096
 
 
+def test_chunked_distillation_profile_only_changes_backend_and_name():
+    dense = asdict(
+        load_tiny_sft_profile(
+            "configs/train/scaled-distill-qwen3-0.6b.toml"
+        )
+    )
+    chunked = asdict(
+        load_tiny_sft_profile(
+            "configs/train/scaled-distill-qwen3-0.6b-chunked.toml"
+        )
+    )
+
+    differences = {
+        key: (dense[key], chunked[key])
+        for key in dense
+        if dense[key] != chunked[key]
+    }
+
+    assert differences == {
+        "name": (
+            "scaled-distill-qwen3-0.6b",
+            "scaled-distill-qwen3-0.6b-chunked",
+        ),
+        "policy_loss_backend": ("dense", "chunked_exact"),
+    }
+
+
 def test_rejects_unknown_training_setting():
     with pytest.raises(ValueError, match="unknown tiny-SFT setting"):
         TinySFTProfile.from_dict(

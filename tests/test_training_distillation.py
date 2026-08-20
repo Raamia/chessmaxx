@@ -162,6 +162,7 @@ def test_policy_dataset_summary_measures_teacher_and_candidate_shape():
     assert 0 < summary.mean_teacher_top1_probability < 1
     assert summary.mean_teacher_entropy > 0
     assert summary.maximum_candidate_length > 0
+    assert summary.maximum_supervised_tokens_per_example == 6
 
 
 def test_policy_dataset_summary_treats_underflowed_probability_as_zero_entropy():
