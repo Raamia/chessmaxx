@@ -80,6 +80,12 @@ class MoveGenerator(Protocol):
     def generate_many(self, fens: list[str]) -> list[GeneratedMove]: ...
 
 
+class PromptMoveGenerator(MoveGenerator, Protocol):
+    """A move generator that can execute explicit feedback-aware prompts."""
+
+    def generate_prompts(self, prompts: list[str]) -> list[GeneratedMove]: ...
+
+
 def collect_model_identity(
     model: Any,
     tokenizer: Any,
@@ -331,18 +337,22 @@ class HuggingFaceMoveGenerator:
         return value
 
     def generate_many(self, fens: list[str]) -> list[GeneratedMove]:
+        return self.generate_prompts([build_prompt(fen) for fen in fens])
+
+    def generate_prompts(self, prompts: list[str]) -> list[GeneratedMove]:
+        if any(not prompt.strip() for prompt in prompts):
+            raise ValueError("generation prompts must not be empty")
         return adaptive_batch_call(
-            fens,
-            self._generate_batch,
+            prompts,
+            self._generate_prompt_batch,
             self._is_out_of_memory,
             self._recover_memory,
         )
 
-    def _generate_batch(self, fens: list[str]) -> list[GeneratedMove]:
-        self._batch_attempts.append(len(fens))
+    def _generate_prompt_batch(self, prompts: list[str]) -> list[GeneratedMove]:
+        self._batch_attempts.append(len(prompts))
         started = time.perf_counter()
         try:
-            prompts = [build_prompt(fen) for fen in fens]
             inputs = self.tokenizer(
                 prompts,
                 return_tensors="pt",
@@ -365,7 +375,7 @@ class HuggingFaceMoveGenerator:
             raise
         elapsed = time.perf_counter() - started
         self._generation_seconds += elapsed
-        latency_per_position = elapsed * 1000 / len(fens)
+        latency_per_position = elapsed * 1000 / len(prompts)
 
         responses: list[GeneratedMove] = []
         prompt_lengths = inputs["attention_mask"].sum(dim=1).tolist()
