@@ -11,6 +11,9 @@ from chessmaxx.training.distillation import (  # noqa: E402
 )
 from chessmaxx.training.config import TinySFTProfile  # noqa: E402
 from chessmaxx.training.train import _policy_trainer_class  # noqa: E402
+from chessmaxx.training.sparse_loss import (  # noqa: E402
+    causal_hidden_and_projection,
+)
 from chessmaxx.evaluation.model import HuggingFaceLegalMoveRanker  # noqa: E402
 import chess  # noqa: E402
 
@@ -151,3 +154,39 @@ def test_legal_move_ranker_selects_highest_likelihood_sequence():
         move.uci() for move in chess.Board().legal_moves
     )[-1]
     assert ranker.telemetry["candidate_sequences_scored"] == 20
+
+
+def test_extracts_hidden_states_without_running_the_dense_lm_head():
+    expected_hidden = torch.randn((2, 4, 3))
+    output_head = torch.nn.Linear(3, 7, bias=False)
+
+    class Backbone:
+        def __call__(self, **kwargs):
+            assert kwargs["input_ids"].shape == (2, 4)
+            assert kwargs["attention_mask"].shape == (2, 4)
+            assert kwargs["use_cache"] is False
+            assert kwargs["return_dict"] is True
+            return SimpleNamespace(last_hidden_state=expected_hidden)
+
+    class CausalLM:
+        model = Backbone()
+
+        def get_output_embeddings(self):
+            return output_head
+
+        def __call__(self, **kwargs):
+            raise AssertionError("the dense causal-LM forward must not run")
+
+    class PeftWrapper:
+        def get_base_model(self):
+            return CausalLM()
+
+    projection = causal_hidden_and_projection(
+        PeftWrapper(),
+        input_ids=torch.ones((2, 4), dtype=torch.long),
+        attention_mask=torch.ones((2, 4), dtype=torch.long),
+    )
+
+    assert projection.hidden_states is expected_hidden
+    assert projection.weight is output_head.weight
+    assert projection.bias is None
