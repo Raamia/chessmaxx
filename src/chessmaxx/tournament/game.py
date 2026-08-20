@@ -9,7 +9,12 @@ import chess.pgn
 
 from chessmaxx.evaluation.model import GeneratedMove
 from chessmaxx.evaluation.moves import check_generated_move
-from chessmaxx.tournament.schema import GameResult, MoveRecord, ScheduledGame
+from chessmaxx.tournament.schema import (
+    GameResult,
+    MoveAttempt,
+    MoveRecord,
+    ScheduledGame,
+)
 
 
 _TERMINATIONS = {
@@ -25,13 +30,21 @@ _TERMINATIONS = {
 class ActiveGame:
     schedule: ScheduledGame
     max_plies: int = 300
+    assisted_player_id: str | None = None
+    max_attempts: int = 1
     board: chess.Board = field(init=False)
     moves: list[MoveRecord] = field(default_factory=list, init=False)
+    pending_attempts: list[MoveAttempt] = field(default_factory=list, init=False)
     result: GameResult | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
-        if self.max_plies <= 0:
-            raise ValueError("max_plies must be positive")
+        if self.max_plies <= 0 or self.max_attempts <= 0:
+            raise ValueError("max_plies and max_attempts must be positive")
+        if self.max_attempts > 1 and self.assisted_player_id not in {
+            self.schedule.white_id,
+            self.schedule.black_id,
+        }:
+            raise ValueError("retrying requires an assisted game participant")
         self.board = chess.Board(self.schedule.initial_fen)
 
     @property
@@ -48,6 +61,22 @@ class ActiveGame:
         player_id = self.current_player_id
         fen_before = self.board.fen()
         checked = check_generated_move(fen_before, response.raw_output)
+        attempt = MoveAttempt(
+            attempt=len(self.pending_attempts) + 1,
+            raw_output=response.raw_output,
+            move_uci=checked.parsed_move,
+            legal=checked.is_legal,
+            error=checked.error,
+            latency_ms=response.latency_ms,
+            prompt_tokens=response.prompt_tokens,
+            output_tokens=response.output_tokens,
+        )
+        self.pending_attempts.append(attempt)
+        attempt_limit = (
+            self.max_attempts if player_id == self.assisted_player_id else 1
+        )
+        if not checked.is_legal and len(self.pending_attempts) < attempt_limit:
+            return None
         record = MoveRecord(
             ply=len(self.moves),
             fen_before=fen_before,
@@ -55,9 +84,11 @@ class ActiveGame:
             raw_output=response.raw_output,
             move_uci=checked.parsed_move,
             legal=checked.is_legal,
-            latency_ms=response.latency_ms,
+            latency_ms=sum(item.latency_ms for item in self.pending_attempts),
+            attempts=tuple(self.pending_attempts),
         )
         self.moves.append(record)
+        self.pending_attempts.clear()
         if not checked.is_legal or checked.parsed_move is None:
             self.result = self._finish(
                 result="0-1" if self.board.turn == chess.WHITE else "1-0",
