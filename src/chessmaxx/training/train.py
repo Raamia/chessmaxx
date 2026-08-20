@@ -29,6 +29,10 @@ from chessmaxx.training.packing import (
     pack_encoded_examples,
 )
 from chessmaxx.training.schema import TrainingExample
+from chessmaxx.training.sparse_loss import (
+    causal_hidden_and_projection,
+    chunked_candidate_sequence_log_likelihoods,
+)
 from chessmaxx.training.tokenize import SupervisedTokenDataset
 
 
@@ -214,19 +218,44 @@ def _policy_trainer_class(transformers: Any, profile: TinySFTProfile) -> Any:
             input_ids = inputs.pop("input_ids")
             attention_mask = inputs.pop("attention_mask")
             batch_size, candidates, length = input_ids.shape
-            outputs = model(
-                input_ids=input_ids.reshape(batch_size * candidates, length),
-                attention_mask=attention_mask.reshape(
-                    batch_size * candidates, length
-                ),
-                use_cache=False,
+            flattened_ids = input_ids.reshape(batch_size * candidates, length)
+            flattened_attention = attention_mask.reshape(
+                batch_size * candidates, length
             )
-            logits = outputs.logits.reshape(
-                batch_size, candidates, length, outputs.logits.shape[-1]
-            )
-            sequence_scores, token_counts = candidate_sequence_log_likelihoods(
-                logits, labels
-            )
+            if profile.policy_loss_backend == "chunked_exact":
+                projection = causal_hidden_and_projection(
+                    model,
+                    input_ids=flattened_ids,
+                    attention_mask=flattened_attention,
+                )
+                hidden_states = projection.hidden_states.reshape(
+                    batch_size,
+                    candidates,
+                    length,
+                    projection.hidden_states.shape[-1],
+                )
+                sequence_scores, token_counts = (
+                    chunked_candidate_sequence_log_likelihoods(
+                        hidden_states,
+                        labels,
+                        projection.weight,
+                        bias=projection.bias,
+                        chunk_size=profile.vocabulary_chunk_size,
+                    )
+                )
+                outputs = {"hidden_states": projection.hidden_states}
+            else:
+                outputs = model(
+                    input_ids=flattened_ids,
+                    attention_mask=flattened_attention,
+                    use_cache=False,
+                )
+                logits = outputs.logits.reshape(
+                    batch_size, candidates, length, outputs.logits.shape[-1]
+                )
+                sequence_scores, token_counts = (
+                    candidate_sequence_log_likelihoods(logits, labels)
+                )
             objective = dense_policy_objective(
                 sequence_scores,
                 token_counts,

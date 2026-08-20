@@ -103,6 +103,72 @@ def test_policy_trainer_backpropagates_through_candidate_logits():
     assert torch.isfinite(logits.grad).all()
 
 
+def test_policy_trainer_backpropagates_through_chunked_hidden_states():
+    class BaseTrainer:
+        pass
+
+    class Backbone(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.embedding = torch.nn.Embedding(8, 4)
+
+        def forward(self, *, input_ids, attention_mask, use_cache, return_dict):
+            assert attention_mask.shape == input_ids.shape
+            assert use_cache is False
+            assert return_dict is True
+            return SimpleNamespace(last_hidden_state=self.embedding(input_ids))
+
+    class Model(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.model = Backbone()
+            self.output_head = torch.nn.Linear(4, 7, bias=False)
+            self.output_head.requires_grad_(False)
+
+        def get_base_model(self):
+            return self
+
+        def get_output_embeddings(self):
+            return self.output_head
+
+        def forward(self, **kwargs):
+            raise AssertionError("dense logits must not be materialized")
+
+    profile = TinySFTProfile(
+        name="chunked-policy",
+        model_id="model",
+        objective="multipv_policy",
+        packing=False,
+        policy_loss_backend="chunked_exact",
+        vocabulary_chunk_size=3,
+    )
+    trainer_type = _policy_trainer_class(
+        SimpleNamespace(Trainer=BaseTrainer), profile
+    )
+    trainer = trainer_type()
+    model = Model()
+    loss, outputs = trainer.compute_loss(
+        model,
+        {
+            "input_ids": torch.ones((1, 2, 4), dtype=torch.long),
+            "attention_mask": torch.ones((1, 2, 4), dtype=torch.long),
+            "labels": torch.tensor(
+                [[[-100, -100, 2, 3], [-100, -100, 4, 5]]]
+            ),
+            "teacher_probabilities": torch.tensor([[0.6, 0.4]]),
+            "candidate_mask": torch.tensor([[True, True]]),
+        },
+        return_outputs=True,
+    )
+    loss.backward()
+
+    assert torch.isfinite(loss)
+    assert outputs["hidden_states"].shape == (2, 4, 4)
+    assert model.model.embedding.weight.grad is not None
+    assert torch.isfinite(model.model.embedding.weight.grad).all()
+    assert model.output_head.weight.grad is None
+
+
 def test_legal_move_ranker_selects_highest_likelihood_sequence():
     class Tokenizer:
         bos_token_id = 1
