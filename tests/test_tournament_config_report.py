@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 
 import chess
 
@@ -22,6 +23,9 @@ def test_checked_in_elo_profile_has_balanced_ladder():
     ]
     assert profile.opponents[-1].rating == 1320
     assert len(openings) == 8
+
+    assisted = replace(profile, selection="retry", max_attempts=3)
+    assert assisted.max_attempts == 3
 
 
 def completed_game(game_id, opponent, model_white, model_move):

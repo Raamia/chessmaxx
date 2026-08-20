@@ -48,16 +48,27 @@ class EloProfile:
     candidate_batch_size: int
     seed: int
     opponents: tuple[OpponentProfile, ...]
+    max_attempts: int = 1
 
     def __post_init__(self) -> None:
         if not self.name.strip() or not self.model_id.strip():
             raise ValueError("Elo profile name and model_id must not be empty")
-        if self.selection not in {"greedy", "legal-rerank"}:
-            raise ValueError("selection must be greedy or legal-rerank")
+        if self.selection not in {
+            "greedy",
+            "retry",
+            "retry-with-legal-list",
+            "legal-rerank",
+        }:
+            raise ValueError("unsupported Elo selection mode")
         if self.games_per_opponent <= 0 or self.games_per_opponent % 2:
             raise ValueError("games_per_opponent must be positive and even")
         if min(self.max_plies, self.batch_size, self.candidate_batch_size) <= 0:
             raise ValueError("Elo batch and game limits must be positive")
+        retrying = self.selection in {"retry", "retry-with-legal-list"}
+        if self.max_attempts <= 0 or (retrying and self.max_attempts < 2):
+            raise ValueError("retry modes require at least two move attempts")
+        if not retrying and self.max_attempts != 1:
+            raise ValueError("only retry modes may configure multiple attempts")
         ids = [opponent.player_id for opponent in self.opponents]
         if not ids or len(ids) != len(set(ids)) or self.model_player_id in ids:
             raise ValueError("Elo profile requires unique opponent IDs")
